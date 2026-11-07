@@ -1,0 +1,4014 @@
+--- a/browser/base/content/browser-customtitlebar.js
++++ b/browser/base/content/browser-customtitlebar.js
+@@ -33,6 +33,10 @@
+       case "gtk":
+         isSupported = window.matchMedia("(-moz-gtk-csd-available)").matches;
+         break;
++      // the bleed desktop leaves a window bare and lets firefox draw the title bar
++      case "bleed":
++        isSupported = true;
++        break;
+     }
+     delete this.systemSupported;
+     return (this.systemSupported = isSupported);
+--- a/browser/components/StartupTelemetry.sys.mjs
++++ b/browser/components/StartupTelemetry.sys.mjs
+@@ -89,7 +89,11 @@
+       );
+     } else if (AppConstants.platform == "macosx") {
+       tasks.push(() => this.macDockStatus());
+-    } else if (AppConstants.platform == "linux") {
++    } else if (
++      AppConstants.platform == "linux" &&
++      AppConstants.MOZ_WIDGET_TOOLKIT == "gtk"
++    ) {
++      // desktop entries are a gnome thing, bleed has no gio service
+       tasks.push(() => this.desktopEntryStatus());
+     }
+ 
+--- a/browser/themes/windows/browser.css
++++ b/browser/themes/windows/browser.css
+@@ -199,7 +199,69 @@
+   content: "\e8bb"; /* ChromeClose */
+   @media (prefers-contrast) {
+     content: "\ef2c"; /* ChromeCloseContrast */
++  }
++}
++
++/* bleed builds with this theme but hasnt got segoe's glyphs, the shapes are drawn instead.
++   its the only linux that gets here */
++@media (-moz-platform: linux) {
++  .titlebar-button {
++    position: relative;
++    width: 46px;
++    padding: 0;
++
++    &::before,
++    &::after {
++      content: "";
++      position: absolute;
++      top: calc(50% - 5px);
++      inset-inline-start: calc(50% - 5px);
++      box-sizing: border-box;
++      width: 10px;
++      height: 10px;
++    }
++  }
++
++  .titlebar-min::before {
++    top: 50%;
++    height: 1px;
++    background-color: currentColor;
++  }
++
++  .titlebar-max::before {
++    border: 1px solid currentColor;
++  }
++
++  .titlebar-restore {
++    &::before {
++      top: calc(50% - 3px);
++      width: 8px;
++      height: 8px;
++      border: 1px solid currentColor;
++    }
++    &::after {
++      inset-inline-start: calc(50% - 3px);
++      width: 8px;
++      height: 8px;
++      border-top: 1px solid currentColor;
++      border-inline-end: 1px solid currentColor;
++    }
+   }
++
++  .titlebar-close {
++    &::before,
++    &::after {
++      top: 50%;
++      inset-inline-start: calc(50% - 7px);
++      width: 14px;
++      height: 1px;
++      background-color: currentColor;
++      transform: rotate(45deg);
++    }
++    &::after {
++      transform: rotate(-45deg);
++    }
++  }
+ }
+ 
+ /* Bookmark menus */
+--- a/config/system-headers.mozbuild
++++ b/config/system-headers.mozbuild
+@@ -1071,6 +1071,71 @@
+         "xcb/xcb.h",
+     ]
+ 
++if CONFIG["MOZ_WIDGET_TOOLKIT"] == "bleed":
++    # libc++ headers firefox doesnt list, their classes say default visibility out loud
++    # and that clashes with gcc_hidden.h unless the wrapper pushes default first
++    system_headers += [
++        "any",
++        "barrier",
++        "bit",
++        "ccomplex",
++        "cfenv",
++        "cfloat",
++        "charconv",
++        "chrono",
++        "cinttypes",
++        "ciso646",
++        "clocale",
++        "codecvt",
++        "compare",
++        "complex.h",
++        "concepts",
++        "coroutine",
++        "csetjmp",
++        "csignal",
++        "cstdalign",
++        "cstdbool",
++        "cstdint",
++        "ctgmath",
++        "cuchar",
++        "cwctype",
++        "execution",
++        "expected",
++        "filesystem",
++        "flat_map",
++        "flat_set",
++        "format",
++        "forward_list",
++        "future",
++        "latch",
++        "mdspan",
++        "memory_resource",
++        "numbers",
++        "numeric",
++        "optional",
++        "random",
++        "ranges",
++        "ratio",
++        "scoped_allocator",
++        "semaphore",
++        "source_location",
++        "span",
++        "stdatomic.h",
++        "stdexcept",
++        "stop_token",
++        "streambuf",
++        "string_view",
++        "strstream",
++        "syncstream",
++        "system_error",
++        "tgmath.h",
++        "typeindex",
++        "uchar.h",
++        "valarray",
++        "variant",
++        "version",
++    ]
++
+ if CONFIG["OS_TARGET"] == "Android":
+     system_headers += [
+         "android_audio/AudioSystem.h",
+--- a/dom/gamepad/moz.build
++++ b/dom/gamepad/moz.build
+@@ -57,7 +57,7 @@
+     UNIFIED_SOURCES += ["windows/WindowsGamepad.cpp"]
+ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "android":
+     UNIFIED_SOURCES += ["android/AndroidGamepad.cpp"]
+-elif CONFIG["OS_ARCH"] in ("Linux", "FreeBSD", "DragonFly"):
++elif CONFIG["OS_ARCH"] in ("Linux", "FreeBSD", "DragonFly") and CONFIG["MOZ_WIDGET_TOOLKIT"] != "bleed":
+     UNIFIED_SOURCES += ["linux/LinuxGamepad.cpp"]
+ else:
+     UNIFIED_SOURCES += ["fallback/FallbackGamepad.cpp"]
+--- a/dom/ipc/PContent.ipdl
++++ b/dom/ipc/PContent.ipdl
+@@ -202,7 +202,7 @@
+ // SetXPCOMProcessAttributes passes an array of font data to the child,
+ // but each platform needs different details so we have platform-specific
+ // versions of the SystemFontListEntry type:
+-#if defined(ANDROID)
++#if defined(ANDROID) || defined(MOZ_WIDGET_BLEED)
+ // Used on Android to pass the list of fonts on the device
+ // to the child process
+ struct SystemFontListEntry {
+--- a/dom/webgpu/SharedTexture.cpp
++++ b/dom/webgpu/SharedTexture.cpp
+@@ -10,7 +10,7 @@
+ #  include "mozilla/webgpu/SharedTextureD3D11.h"
+ #endif
+ 
+-#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID) && !defined(MOZ_WIDGET_BLEED)
+ #  include "mozilla/webgpu/SharedTextureDMABuf.h"
+ #endif
+ 
+@@ -32,7 +32,7 @@
+ #ifdef XP_WIN
+   texture = SharedTextureD3D11::Create(aParent, aDeviceId, aWidth, aHeight,
+                                        aFormat, aUsage);
+-#elif defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++#elif defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID) && !defined(MOZ_WIDGET_BLEED)
+   texture = SharedTextureDMABuf::Create(aParent, aDeviceId, aWidth, aHeight,
+                                         aFormat, aUsage);
+ #elif defined(XP_MACOSX)
+--- a/dom/webgpu/ipc/WebGPUParent.cpp
++++ b/dom/webgpu/ipc/WebGPUParent.cpp
+@@ -26,7 +26,7 @@
+ #  include "mozilla/webgpu/SharedTextureD3D11.h"
+ #endif
+ 
+-#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID) && !defined(MOZ_WIDGET_BLEED)
+ #  include "mozilla/webgpu/SharedTextureDMABuf.h"
+ #endif
+ 
+@@ -105,9 +105,22 @@
+ }
+ #endif
+ 
+-#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++#if defined(MOZ_WIDGET_BLEED)
++// wgpu asks for these on any linux target, bleed has no dmabuf or vulkan to give
+ extern int32_t wgpu_server_get_dma_buf_fd(WGPUWebGPUParentPtr aParent,
+                                           WGPUTextureId aId) {
++  return -1;
++}
++
++extern const WGPUVkImageHandle* wgpu_server_get_vk_image_handle(
++    WGPUWebGPUParentPtr aParent, WGPUTextureId aId) {
++  return nullptr;
++}
++#endif
++
++#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID) && !defined(MOZ_WIDGET_BLEED)
++extern int32_t wgpu_server_get_dma_buf_fd(WGPUWebGPUParentPtr aParent,
++                                          WGPUTextureId aId) {
+   auto* parent = static_cast<WebGPUParent*>(aParent);
+ 
+   auto texture = parent->GetSharedTexture(aId);
+@@ -127,7 +140,7 @@
+ }
+ #endif
+ 
+-#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID) && !defined(MOZ_WIDGET_BLEED)
+ extern const WGPUVkImageHandle* wgpu_server_get_vk_image_handle(
+     WGPUWebGPUParentPtr aParent, WGPUTextureId aId) {
+   auto* parent = static_cast<WebGPUParent*>(aParent);
+@@ -1954,7 +1967,7 @@
+ }
+ #endif
+ 
+-#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID) && !defined(MOZ_WIDGET_BLEED)
+ VkImageHandle::~VkImageHandle() {
+   if (!mParent) {
+     return;
+--- a/dom/webgpu/moz.build
++++ b/dom/webgpu/moz.build
+@@ -84,7 +84,7 @@
+         "SharedTextureD3D11.cpp",
+     ]
+ 
+-if CONFIG["OS_TARGET"] == "Linux":
++if CONFIG["OS_TARGET"] == "Linux" and CONFIG["MOZ_WIDGET_TOOLKIT"] != "bleed":
+     EXPORTS.mozilla.webgpu += [
+         "SharedTextureDMABuf.h",
+     ]
+--- a/dom/webserial/SerialPlatformService.cpp
++++ b/dom/webserial/SerialPlatformService.cpp
+@@ -15,7 +15,7 @@
+ namespace mozilla::dom {
+ 
+ #if !defined(XP_WIN) && !defined(XP_MACOSX) && \
+-    !(defined(XP_LINUX) && !defined(ANDROID))
++    !(defined(XP_LINUX) && !defined(ANDROID) && !defined(MOZ_WIDGET_BLEED))
+ already_AddRefed<SerialPlatformService>
+ SerialPlatformService::GetInstanceImpl() {
+   return MakeAndAddRef<TestSerialPlatformService>();
+--- a/dom/webserial/moz.build
++++ b/dom/webserial/moz.build
+@@ -26,9 +26,9 @@
+         "cfgmgr32",
+         "setupapi",
+     ]
+-elif (CONFIG["OS_TARGET"] == "Darwin" and CONFIG["TARGET_OS"] != "iOS") or CONFIG[
+-    "OS_TARGET"
+-] == "Linux":
++elif (CONFIG["OS_TARGET"] == "Darwin" and CONFIG["TARGET_OS"] != "iOS") or (
++    CONFIG["OS_TARGET"] == "Linux" and CONFIG["MOZ_WIDGET_TOOLKIT"] != "bleed"
++):
+     UNIFIED_SOURCES += [
+         "PosixSerialPlatformService.cpp",
+     ]
+--- a/gfx/2d/2D.h
++++ b/gfx/2d/2D.h
+@@ -34,7 +34,7 @@
+ 
+ #include "nsRegionFwd.h"
+ 
+-#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_GTK)
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_BLEED)
+ #  ifndef MOZ_ENABLE_FREETYPE
+ #    define MOZ_ENABLE_FREETYPE
+ #  endif
+@@ -2237,7 +2237,7 @@
+       RefPtr<SharedFTFace> aFace, FcPattern* aPattern);
+ #endif
+ 
+-#ifdef MOZ_WIDGET_ANDROID
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_BLEED)
+   static already_AddRefed<ScaledFont> CreateScaledFontForFreeTypeFont(
+       const RefPtr<UnscaledFont>& aUnscaledFont, Float aSize,
+       RefPtr<SharedFTFace> aFace, bool aApplySyntheticBold = false);
+--- a/gfx/2d/DrawTargetSkia.cpp
++++ b/gfx/2d/DrawTargetSkia.cpp
+@@ -1857,7 +1857,7 @@
+   SkScalar gamma = SK_Scalar1;
+ #endif
+ 
+-#if defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_ANDROID)
++#if defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_BLEED)
+   int32_t gammaVal = StaticPrefs::gfx_font_rendering_freetype_gamma();
+   int32_t contrastVal =
+       StaticPrefs::gfx_font_rendering_freetype_enhanced_contrast();
+--- a/gfx/2d/Factory.cpp
++++ b/gfx/2d/Factory.cpp
+@@ -27,7 +27,7 @@
+ #  include "UnscaledFontFreeType.h"
+ #endif
+ 
+-#ifdef MOZ_WIDGET_ANDROID
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_BLEED)
+ #  include "ScaledFontFreeType.h"
+ #  include "NativeFontResourceFreeType.h"
+ #  include "UnscaledFontFreeType.h"
+@@ -413,7 +413,7 @@
+     case FontType::FONTCONFIG:
+       return NativeFontResourceFontconfig::Create(
+           aData, aSize, static_cast<FT_Library>(aFontContext));
+-#elif defined(MOZ_WIDGET_ANDROID)
++#elif defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_BLEED)
+     case FontType::FREETYPE:
+       return NativeFontResourceFreeType::Create(
+           aData, aSize, static_cast<FT_Library>(aFontContext));
+@@ -441,7 +441,7 @@
+     case FontType::FONTCONFIG:
+       return UnscaledFontFontconfig::CreateFromFontDescriptor(
+           aData, aDataLength, aIndex);
+-#elif defined(MOZ_WIDGET_ANDROID)
++#elif defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_BLEED)
+     case FontType::FREETYPE:
+       return UnscaledFontFreeType::CreateFromFontDescriptor(aData, aDataLength,
+                                                             aIndex);
+@@ -471,7 +471,7 @@
+ }
+ #endif
+ 
+-#ifdef MOZ_WIDGET_ANDROID
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_BLEED)
+ already_AddRefed<ScaledFont> Factory::CreateScaledFontForFreeTypeFont(
+     const RefPtr<UnscaledFont>& aUnscaledFont, Float aSize,
+     RefPtr<SharedFTFace> aFace, bool aApplySyntheticBold) {
+--- a/gfx/2d/NativeFontResourceFreeType.cpp
++++ b/gfx/2d/NativeFontResourceFreeType.cpp
+@@ -35,7 +35,7 @@
+   return resource.forget();
+ }
+ 
+-#ifdef MOZ_WIDGET_ANDROID
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_BLEED)
+ already_AddRefed<NativeFontResourceFreeType> NativeFontResourceFreeType::Create(
+     const uint8_t* aFontData, uint32_t aDataLength, FT_Library aFTLibrary) {
+   return CreateInternal<NativeFontResourceFreeType>(aFontData, aDataLength,
+--- a/gfx/2d/NativeFontResourceFreeType.h
++++ b/gfx/2d/NativeFontResourceFreeType.h
+@@ -19,7 +19,7 @@
+  public:
+   MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(NativeFontResourceFreeType, override)
+ 
+-#ifdef MOZ_WIDGET_ANDROID
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_BLEED)
+   static already_AddRefed<NativeFontResourceFreeType> Create(
+       const uint8_t* aFontData, uint32_t aDataLength,
+       FT_Library aFTLibrary = nullptr);
+--- a/gfx/2d/UnscaledFontFreeType.cpp
++++ b/gfx/2d/UnscaledFontFreeType.cpp
+@@ -177,7 +177,7 @@
+   }
+ }
+ 
+-#ifdef MOZ_WIDGET_ANDROID
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_BLEED)
+ 
+ already_AddRefed<ScaledFont> UnscaledFontFreeType::CreateScaledFont(
+     Float aGlyphSize, const uint8_t* aInstanceData,
+--- a/gfx/2d/UnscaledFontFreeType.h
++++ b/gfx/2d/UnscaledFontFreeType.h
+@@ -39,7 +39,7 @@
+ 
+   RefPtr<SharedFTFace> InitFace();
+ 
+-#ifdef MOZ_WIDGET_ANDROID
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_BLEED)
+   static already_AddRefed<UnscaledFont> CreateFromFontDescriptor(
+       const uint8_t* aData, uint32_t aDataLength, uint32_t aIndex);
+ 
+--- a/gfx/2d/moz.build
++++ b/gfx/2d/moz.build
+@@ -89,7 +89,7 @@
+     ]
+     DEFINES["WIN32"] = True
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "bleed", "gtk"):
+     EXPORTS.mozilla.gfx += [
+         "UnscaledFontFreeType.h",
+     ]
+@@ -103,7 +103,7 @@
+         "ScaledFontFontconfig.cpp",
+     ]
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] == "android":
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "bleed"):
+     SOURCES += [
+         "ScaledFontFreeType.cpp",
+     ]
+@@ -195,12 +195,12 @@
+ for var in ("USE_CAIRO", "MOZ2D_HAS_MOZ_CAIRO"):
+     DEFINES[var] = True
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "bleed", "gtk"):
+     DEFINES["MOZ_ENABLE_FREETYPE"] = True
+ 
+ COMPILE_FLAGS["WARNINGS_CXXFLAGS"] += ["-Werror=switch"]
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "bleed", "gtk"):
+     CXXFLAGS += CONFIG["CAIRO_FT_CFLAGS"]
+ 
+ LOCAL_INCLUDES += CONFIG["SKIA_INCLUDES"]
+--- a/gfx/skia/moz.build
++++ b/gfx/skia/moz.build
+@@ -563,7 +563,7 @@
+     SOURCES += [
+         'skia/src/ports/SkTypeface_mac_ct.cpp',
+     ]
+-if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gtk':
++if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('gtk', 'bleed'):
+     UNIFIED_SOURCES += [
+         'skia/src/ports/SkLog_stdio.cpp',
+         'skia/src/ports/SkOSFile_posix.cpp',
+@@ -655,7 +655,7 @@
+     "/gfx/harfbuzz/src",
+ ]
+ 
+-if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('gtk', 'android'):
++if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('gtk', 'android', 'bleed'):
+     LOCAL_INCLUDES += [
+         "/gfx/cairo/cairo/src",
+     ]
+--- /dev/null
++++ b/gfx/thebes/gfxBleedPlatform.cpp
+@@ -0,0 +1,66 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "gfxBleedPlatform.h"
++
++#include "gfxFT2FontList.h"
++#include "gfxImageSurface.h"
++#include "mozilla/gfx/2D.h"
++#include "VsyncSource.h"
++
++#include "ft2build.h"
++#include FT_FREETYPE_H
++#include FT_MODULE_H
++
++using namespace mozilla;
++using namespace mozilla::gfx;
++
++static FT_Library gPlatformFTLibrary = nullptr;
++
++gfxBleedPlatform::gfxBleedPlatform() {
++  FT_Init_FreeType(&gPlatformFTLibrary);
++  Factory::SetFTLibrary(gPlatformFTLibrary);
++}
++
++gfxBleedPlatform::~gfxBleedPlatform() {
++  FT_Done_FreeType(gPlatformFTLibrary);
++  gPlatformFTLibrary = nullptr;
++}
++
++already_AddRefed<gfxASurface> gfxBleedPlatform::CreateOffscreenSurface(
++    const IntSize& aSize, gfxImageFormat aFormat) {
++  if (!Factory::AllowedSurfaceSize(aSize)) {
++    return nullptr;
++  }
++  RefPtr<gfxASurface> surface = new gfxImageSurface(aSize, aFormat);
++  return surface.forget();
++}
++
++bool gfxBleedPlatform::CreatePlatformFontList() {
++  return gfxPlatformFontList::Initialize(new gfxFT2FontList);
++}
++
++void gfxBleedPlatform::ReadSystemFontList(
++    mozilla::dom::SystemFontList* aFontList) {
++  gfxFT2FontList::PlatformFontList()->ReadSystemFontList(aFontList);
++}
++
++// whatever is in /usr/share/fonts, wide coverage ones first once theyre shipped
++void gfxBleedPlatform::GetCommonFallbackFonts(
++    uint32_t aCh, Script aRunScript, FontPresentation aPresentation,
++    nsTArray<const char*>& aFontList) {
++  if (PrefersColor(aPresentation)) {
++    aFontList.AppendElement("Noto Color Emoji");
++  }
++  aFontList.AppendElement("DejaVu Sans");
++  aFontList.AppendElement("Noto Sans");
++  aFontList.AppendElement("Barlow");
++  aFontList.AppendElement("JetBrains Mono");
++}
++
++// no vblank from the display yet, a timer it is
++already_AddRefed<mozilla::gfx::VsyncSource>
++gfxBleedPlatform::CreateGlobalHardwareVsyncSource() {
++  return GetSoftwareVsyncSource();
++}
+--- /dev/null
++++ b/gfx/thebes/gfxBleedPlatform.h
+@@ -0,0 +1,43 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef GFX_PLATFORM_BLEED_H
++#define GFX_PLATFORM_BLEED_H
++
++#include "gfxPlatform.h"
++
++// bleed: everything in software, fonts through the in tree freetype from
++// /usr/share/fonts like android does with /system/fonts
++class gfxBleedPlatform final : public gfxPlatform {
++ public:
++  gfxBleedPlatform();
++  virtual ~gfxBleedPlatform();
++
++  static gfxBleedPlatform* GetPlatform() {
++    return (gfxBleedPlatform*)gfxPlatform::GetPlatform();
++  }
++
++  already_AddRefed<gfxASurface> CreateOffscreenSurface(
++      const IntSize& aSize, gfxImageFormat aFormat) override;
++
++  bool CreatePlatformFontList() override;
++  void ReadSystemFontList(mozilla::dom::SystemFontList*) override;
++
++  void GetCommonFallbackFonts(uint32_t aCh, Script aRunScript,
++                              FontPresentation aPresentation,
++                              nsTArray<const char*>& aFontList) override;
++
++  bool FontHintingEnabled() override { return true; }
++  bool RequiresLinearZoom() override { return false; }
++
++  already_AddRefed<mozilla::gfx::VsyncSource> CreateGlobalHardwareVsyncSource()
++      override;
++
++  static bool CheckVariationFontSupport() { return true; }
++
++ protected:
++  bool AccelerateLayersByDefault() override { return false; }
++};
++
++#endif  // GFX_PLATFORM_BLEED_H
+--- a/gfx/thebes/gfxFT2FontList.cpp
++++ b/gfx/thebes/gfxFT2FontList.cpp
+@@ -7,7 +7,11 @@
+ #include "mozilla/MemoryReporting.h"
+ 
+ #include "mozilla/dom/ContentChild.h"
+-#include "gfxAndroidPlatform.h"
++#ifdef MOZ_WIDGET_BLEED
++#  include "gfxBleedPlatform.h"
++#else
++#  include "gfxAndroidPlatform.h"
++#endif
+ #include "mozilla/Omnijar.h"
+ #include "mozilla/UniquePtr.h"
+ #include "mozilla/UniquePtrExtensions.h"
+@@ -15,8 +19,10 @@
+ 
+ #include "nsXULAppAPI.h"
+ #include <dirent.h>
+-#include <android/log.h>
+-#define ALOG(args...) __android_log_print(ANDROID_LOG_INFO, "Gecko", ##args)
++#ifdef MOZ_WIDGET_ANDROID
++#  include <android/log.h>
++#  define ALOG(args...) __android_log_print(ANDROID_LOG_INFO, "Gecko", ##args)
++#endif
+ 
+ #include "ft2build.h"
+ #include FT_FREETYPE_H
+@@ -1598,6 +1604,12 @@
+   }
+ 
+   if (!useSystemFontAPI)
++#endif
++#if defined(MOZ_WIDGET_BLEED)
++  // bleeds system fonts, BLEED_FONT_DIR to look somewhere else
++  nsAutoCString androidFontsRoot(PR_GetEnv("BLEED_FONT_DIR")
++                                     ? PR_GetEnv("BLEED_FONT_DIR")
++                                     : "/usr/share/fonts");
+ #endif
+   {
+     FindFontsInDir(androidFontsRoot, mFontNameCache.get());
+--- a/gfx/thebes/gfxFT2Fonts.cpp
++++ b/gfx/thebes/gfxFT2Fonts.cpp
+@@ -11,6 +11,9 @@
+ #elif defined(ANDROID)
+ #  include "gfxAndroidPlatform.h"
+ #  define gfxToolkitPlatform gfxAndroidPlatform
++#elif defined(MOZ_WIDGET_BLEED)
++#  include "gfxBleedPlatform.h"
++#  define gfxToolkitPlatform gfxBleedPlatform
+ #endif
+ 
+ #include "gfxTypes.h"
+--- a/gfx/thebes/gfxPlatform.cpp
++++ b/gfx/thebes/gfxPlatform.cpp
+@@ -84,6 +84,8 @@
+ #  include "DMABufFormats.h"
+ #elif defined(ANDROID)
+ #  include "gfxAndroidPlatform.h"
++#elif defined(MOZ_WIDGET_BLEED)
++#  include "gfxBleedPlatform.h"
+ #endif
+ #if defined(MOZ_WIDGET_ANDROID)
+ #  include "mozilla/java/HardwareCodecCapabilityUtilsWrappers.h"
+@@ -793,6 +795,8 @@
+     sHasVariationFontSupport = gfxPlatformGtk::CheckVariationFontSupport();
+ #elif defined(ANDROID)
+     sHasVariationFontSupport = gfxAndroidPlatform::CheckVariationFontSupport();
++#elif defined(MOZ_WIDGET_BLEED)
++    sHasVariationFontSupport = gfxBleedPlatform::CheckVariationFontSupport();
+ #else
+ #  error "No gfxPlatform implementation available"
+ #endif
+@@ -918,6 +922,8 @@
+   gPlatform = new gfxPlatformGtk;
+ #elif defined(ANDROID)
+   gPlatform = new gfxAndroidPlatform;
++#elif defined(MOZ_WIDGET_BLEED)
++  gPlatform = new gfxBleedPlatform;
+ #else
+ #  error "No gfxPlatform implementation available"
+ #endif
+--- a/gfx/thebes/moz.build
++++ b/gfx/thebes/moz.build
+@@ -99,6 +99,23 @@
+     UNIFIED_SOURCES += [
+         "AndroidSystemFontIterator.cpp",
+     ]
++elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "bleed":
++    EXPORTS += [
++        "gfxBleedPlatform.h",
++        "gfxFT2FontBase.h",
++        "gfxFT2Fonts.h",
++    ]
++    EXPORTS.mozilla.gfx += [
++        "PrintTargetPDF.h",
++    ]
++    SOURCES += [
++        "gfxBleedPlatform.cpp",
++        "gfxFT2FontBase.cpp",
++        "gfxFT2FontList.cpp",
++        "gfxFT2Fonts.cpp",
++        "gfxFT2Utils.cpp",
++        "PrintTargetPDF.cpp",
++    ]
+ elif CONFIG["MOZ_WIDGET_TOOLKIT"] in ("cocoa", "uikit"):
+     EXPORTS += [
+         "gfxMacUtils.h",
+@@ -279,10 +296,10 @@
+     "/widget/gtk",
+ ]
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "bleed", "gtk"):
+     DEFINES["MOZ_ENABLE_FREETYPE"] = True
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android"):
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "bleed"):
+     CXXFLAGS += CONFIG["CAIRO_FT_CFLAGS"]
+ 
+ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+--- a/gfx/webrender_bindings/Moz2DImageRenderer.cpp
++++ b/gfx/webrender_bindings/Moz2DImageRenderer.cpp
+@@ -181,7 +181,7 @@
+ #elif defined(XP_WIN)
+     font.mUnscaledFont = new UnscaledFontDWrite(
+         reinterpret_cast<IDWriteFontFace*>(aHandle), nullptr);
+-#elif defined(ANDROID)
++#elif defined(ANDROID) || defined(MOZ_WIDGET_BLEED)
+     font.mUnscaledFont = new UnscaledFontFreeType(
+         reinterpret_cast<const char*>(aHandle), aIndex);
+ #else
+@@ -255,7 +255,7 @@
+       FontType::MAC;
+ #elif defined(XP_WIN)
+       FontType::DWRITE;
+-#elif defined(ANDROID)
++#elif defined(ANDROID) || defined(MOZ_WIDGET_BLEED)
+       FontType::FREETYPE;
+ #else
+       FontType::FONTCONFIG;
+@@ -481,6 +481,10 @@
+         translator.TranslateRecording((char*)blob.begin().get(), blob.length());
+     if (!ret) {
+       gfxCriticalNote << "Replay failure: " << translator.GetError();
++#ifdef MOZ_WIDGET_BLEED
++      // the critical log isnt printed anywhere on bleed
++      printf_stderr("blob replay failure: %s\n", translator.GetError().c_str());
++#endif
+ #ifdef FUZZING
+       return false;
+ #else
+--- a/gfx/webrender_bindings/RenderThread.cpp
++++ b/gfx/webrender_bindings/RenderThread.cpp
+@@ -74,7 +74,7 @@
+ size_t RenderThread::sRendererCount = 0;
+ size_t RenderThread::sActiveRendererCount = 0;
+ 
+-#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_GTK)
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_BLEED)
+ static bool USE_DEDICATED_GLYPH_RASTER_THREAD = true;
+ #else
+ static bool USE_DEDICATED_GLYPH_RASTER_THREAD = false;
+--- a/gfx/webrender_bindings/moz.build
++++ b/gfx/webrender_bindings/moz.build
+@@ -105,7 +105,7 @@
+         "RenderCompositorNative.cpp",
+     ]
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "bleed", "gtk"):
+     CXXFLAGS += CONFIG["CAIRO_FT_CFLAGS"]
+ 
+ if CONFIG["COMPILE_ENVIRONMENT"]:
+--- /dev/null
++++ b/image/decoders/icon/bleed/moz.build
+@@ -0,0 +1,11 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++SOURCES += [
++    "nsIconChannel.cpp",
++]
++
++include("/ipc/chromium/chromium-config.mozbuild")
++
++FINAL_LIBRARY = "xul"
+--- /dev/null
++++ b/image/decoders/icon/bleed/nsIconChannel.cpp
+@@ -0,0 +1,82 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "mozilla/CheckedInt.h"
++#include "mozilla/gfx/Types.h"
++#include "nsComponentManagerUtils.h"
++#include "nsIconChannel.h"
++#include "nsIIconURI.h"
++#include "nsIStringStream.h"
++#include "nsMimeTypes.h"
++#include "nsNetUtil.h"
++
++NS_IMPL_ISUPPORTS(nsIconChannel, nsIRequest, nsIChannel)
++
++using namespace mozilla;
++
++// bleed has no icon theme to ask yet, every moz-icon is a plain 9x style page:
++// white with a dark outline and the top right corner folded over
++static void DrawPageIcon(uint8_t* aOut, int aSize) {
++  int fold = aSize / 4;
++  int left = aSize / 8, right = aSize - aSize / 8 - 1;
++  for (int y = 0; y < aSize; y++) {
++    for (int x = 0; x < aSize; x++) {
++      uint8_t* p = aOut + (y * aSize + x) * 4;
++      bool inside = x >= left && x <= right;
++      bool cut = x > right - fold + (y);  // past the folded corner
++      bool edge = x == left || x == right || y == 0 || y == aSize - 1 ||
++                  x == right - fold + y || (y == fold && x >= right - fold);
++      if (!inside || cut) {
++        p[0] = p[1] = p[2] = p[3] = 0;
++      } else if (edge) {
++        p[0] = p[1] = p[2] = 0x40;
++        p[3] = 0xff;
++      } else {
++        p[0] = p[1] = p[2] = 0xff;
++        p[3] = 0xff;
++      }
++    }
++  }
++}
++
++static nsresult moz_icon_to_channel(nsIURI* aURI, nsILoadInfo* aLoadInfo,
++                                    uint32_t aIconSize, nsIChannel** aChannel) {
++  NS_ENSURE_TRUE(aIconSize < 256 && aIconSize > 0, NS_ERROR_UNEXPECTED);
++
++  // two size bytes, the format and a flag byte, then the pixels
++  CheckedInt32 bufSize = 4 + 4 * CheckedInt32(aIconSize) * CheckedInt32(aIconSize);
++  if (!bufSize.isValid()) {
++    return NS_ERROR_OUT_OF_MEMORY;
++  }
++  uint8_t* const buf = (uint8_t*)moz_xmalloc(bufSize.value());
++  buf[0] = aIconSize;
++  buf[1] = aIconSize;
++  buf[2] = uint8_t(gfx::SurfaceFormat::R8G8B8A8);
++  buf[3] = 0xFF;
++  DrawPageIcon(buf + 4, aIconSize);
++
++  nsresult rv;
++  nsCOMPtr<nsIStringInputStream> stream =
++      do_CreateInstance("@mozilla.org/io/string-input-stream;1", &rv);
++  if (NS_FAILED(rv)) {
++    free(buf);
++    return rv;
++  }
++  rv = stream->AdoptData((char*)buf, bufSize.value());
++  NS_ENSURE_SUCCESS(rv, rv);
++
++  return NS_NewInputStreamChannelInternal(
++      aChannel, aURI, stream.forget(), nsLiteralCString(IMAGE_ICON_MS),
++      /* aContentCharset */ ""_ns, aLoadInfo);
++}
++
++nsresult nsIconChannel::Init(nsIURI* aURI, nsILoadInfo* aLoadInfo) {
++  nsCOMPtr<nsIMozIconURI> iconURI = do_QueryInterface(aURI);
++  NS_ASSERTION(iconURI, "URI is not an nsIMozIconURI");
++
++  uint32_t desiredImageSize;
++  iconURI->GetImageSize(&desiredImageSize);
++  return moz_icon_to_channel(iconURI, aLoadInfo, desiredImageSize,
++                             getter_AddRefs(mRealChannel));
++}
+--- /dev/null
++++ b/image/decoders/icon/bleed/nsIconChannel.h
+@@ -0,0 +1,42 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef mozilla_image_decoders_icon_android_nsIconChannel_h
++#define mozilla_image_decoders_icon_android_nsIconChannel_h
++
++#include "nsIChannel.h"
++#include "nsIURI.h"
++#include "nsCOMPtr.h"
++
++/**
++ * This class is the Android implementation of nsIconChannel.
++ * It asks Android for an icon, and creates a new channel for
++ * that file to which all calls will be proxied.
++ */
++class nsIconChannel final : public nsIChannel {
++ public:
++  NS_DECL_ISUPPORTS
++  NS_FORWARD_NSIREQUEST(mRealChannel->)
++  NS_FORWARD_NSICHANNEL(mRealChannel->)
++
++  nsIconChannel() {}
++
++  /**
++   * Called by nsIconProtocolHandler after it creates this channel.
++   * Must be called before calling any other function on this object.
++   * If this method fails, no other function must be called on this object.
++   */
++  nsresult Init(nsIURI* aURI, nsILoadInfo* aLoadInfo);
++
++ private:
++  ~nsIconChannel() {}
++
++  /**
++   * The channel to the temp icon file (e.g. to /tmp/2qy9wjqw.html).
++   * Will always be non-null after a successful Init.
++   */
++  nsCOMPtr<nsIChannel> mRealChannel;
++};
++
++#endif  // mozilla_image_decoders_icon_android_nsIconChannel_h
+--- a/image/decoders/icon/moz.build
++++ b/image/decoders/icon/moz.build
+@@ -33,5 +33,8 @@
+ if CONFIG["OS_TARGET"] == "Android":
+     platform = "android"
+ 
++if CONFIG["MOZ_WIDGET_TOOLKIT"] == "bleed":
++    platform = "bleed"
++
+ if platform:
+     LOCAL_INCLUDES += [platform]
+--- a/image/decoders/moz.build
++++ b/image/decoders/moz.build
+@@ -16,6 +16,8 @@
+     DIRS += ["icon/mac", "icon"]
+ elif toolkit == "android":
+     DIRS += ["icon/android", "icon"]
++elif toolkit == "bleed":
++    DIRS += ["icon/bleed", "icon"]
+ 
+ UNIFIED_SOURCES += [
+     "EXIF.cpp",
+--- /dev/null
++++ b/intl/locale/bleed/OSPreferences_bleed.cpp
+@@ -0,0 +1,86 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include <locale.h>
++#include "mozilla/LookAndFeel.h"
++#include "mozilla/intl/Locale.h"
++#include "OSPreferences.h"
++
++#include "nsServiceManagerUtils.h"
++
++using namespace mozilla;
++using namespace mozilla::intl;
++
++OSPreferences::OSPreferences() = default;
++
++bool OSPreferences::ReadSystemLocales(nsTArray<nsCString>& aLocaleList) {
++  MOZ_ASSERT(aLocaleList.IsEmpty());
++
++  nsAutoCString defaultLang(Locale::GetDefaultLocale());
++
++  if (CanonicalizeLanguageTag(defaultLang)) {
++    aLocaleList.AppendElement(defaultLang);
++    return true;
++  }
++  return false;
++}
++
++bool OSPreferences::ReadRegionalPrefsLocales(nsTArray<nsCString>& aLocaleList) {
++  MOZ_ASSERT(aLocaleList.IsEmpty());
++
++  // For now we're just taking the LC_TIME from POSIX environment for all
++  // regional preferences.
++  nsAutoCString localeStr(setlocale(LC_TIME, nullptr));
++
++  if (CanonicalizeLanguageTag(localeStr)) {
++    aLocaleList.AppendElement(localeStr);
++    return true;
++  }
++
++  return false;
++}
++
++/**
++ * Since Gtk does not provide a way to customize or format date/time patterns,
++ * we're reusing ICU data here, but we do modify it according to the only
++ * setting Gtk gives us - hourCycle.
++ *
++ * This means that for gtk we will return a pattern from ICU altered to
++ * represent h12/h24 hour cycle if the user modified the default value.
++ *
++ * In short, this should work like this:
++ *
++ *  * gtk defaults, pl: 24h
++ *  * gtk defaults, en: 12h
++ *
++ *  * gtk 12h, pl: 12h
++ *  * gtk 12h, en: 12h
++ *
++ *  * gtk 24h, pl: 24h
++ *  * gtk 12h, en: 12h
++ */
++bool OSPreferences::ReadDateTimePattern(DateTimeFormatStyle aDateStyle,
++                                        DateTimeFormatStyle aTimeStyle,
++                                        const nsACString& aLocale,
++                                        nsACString& aRetVal) {
++  nsAutoCString skeleton;
++  if (!GetDateTimeSkeletonForStyle(aDateStyle, aTimeStyle, aLocale, skeleton)) {
++    return false;
++  }
++
++  // Customize the skeleton if necessary to reflect user's 12/24hr pref
++  int hourCycle = LookAndFeel::GetInt(LookAndFeel::IntID::HourCycle);
++  if (hourCycle == 12 || hourCycle == 24) {
++    OverrideSkeletonHourCycle(hourCycle == 24, skeleton);
++  }
++
++  if (!GetPatternForSkeleton(skeleton, aLocale, aRetVal)) {
++    return false;
++  }
++
++  return true;
++}
++
++void OSPreferences::RemoveObservers() {}
+--- /dev/null
++++ b/intl/locale/bleed/moz.build
+@@ -0,0 +1,12 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++SOURCES += ["OSPreferences_bleed.cpp"]
++
++
++FINAL_LIBRARY = "xul"
++
++LOCAL_INCLUDES += [
++    "..",
++]
+--- a/intl/locale/moz.build
++++ b/intl/locale/moz.build
+@@ -18,6 +18,8 @@
+     DIRS += ["gtk"]
+ elif toolkit == "android":
+     DIRS += ["android"]
++elif toolkit == "bleed":
++    DIRS += ["bleed"]
+ 
+ XPIDL_SOURCES += [
+     "mozILocaleService.idl",
+--- a/ipc/chromium/src/base/message_loop.cc
++++ b/ipc/chromium/src/base/message_loop.cc
+@@ -277,6 +277,9 @@
+   if (type_ == TYPE_UI) {
+ #  if defined(XP_DARWIN)
+     pump_ = base::MessagePumpMac::Create();
++#  elif defined(MOZ_WIDGET_BLEED)
++    // no glib, geckos ui thread runs nsAppShell and this loop just runs tasks
++    pump_ = new base::MessagePumpDefault();
+ #  elif defined(XP_LINUX) || defined(__DragonFly__) || defined(XP_FREEBSD) || \
+       defined(XP_NETBSD) || defined(XP_OPENBSD)
+     pump_ = new base::MessagePumpForUI();
+--- a/ipc/glue/GeckoChildProcessHost.cpp
++++ b/ipc/glue/GeckoChildProcessHost.cpp
+@@ -340,6 +340,9 @@
+   virtual Result<Ok, LaunchError> DoSetup() override;
+ };
+ typedef LinuxProcessLauncher ProcessLauncher;
++#  elif defined(MOZ_WIDGET_BLEED)
++// plain posix_spawn, nothing gtk wants set in the environment
++typedef PosixProcessLauncher ProcessLauncher;
+ #  elif defined(MOZ_WIDGET_UIKIT)
+ class IosProcessLauncher : public PosixProcessLauncher {
+  public:
+--- a/layout/base/nsLayoutUtils.cpp
++++ b/layout/base/nsLayoutUtils.cpp
+@@ -9792,6 +9792,10 @@
+   // UI font-size.
+   aName = u"sans-serif"_ns;
+   aStyle.size = 15;
++#elif defined(MOZ_WIDGET_BLEED)
++  // crime-scene draws its own ui text a touch smaller than gtk would
++  aName = u"sans-serif"_ns;
++  aStyle.size = 13;
+ #else
+ #  error "Unknown platform"
+ #endif
+--- a/layout/style/nsMediaFeatures.cpp
++++ b/layout/style/nsMediaFeatures.cpp
+@@ -256,7 +256,7 @@
+ #elif defined(ANDROID)
+     case StylePlatform::Android:
+       return true;
+-#elif defined(MOZ_WIDGET_GTK)
++#elif defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_BLEED)
+     case StylePlatform::Linux:
+       return true;
+ #elif defined(XP_MACOSX)
+--- a/media/libcubeb/src/cubeb.c
++++ b/media/libcubeb/src/cubeb.c
+@@ -64,6 +64,10 @@
+ int
+ sndio_init(cubeb ** context, char const * context_name);
+ #endif
++#if defined(USE_BLEED)
++int
++bleed_init(cubeb ** context, char const * context_name);
++#endif
+ #if defined(USE_SUN)
+ int
+ sun_init(cubeb ** context, char const * context_name);
+@@ -191,6 +195,10 @@
+ #if defined(USE_SNDIO)
+       init_oneshot = sndio_init;
+ #endif
++    } else if (!strcmp(backend_name, "bleed")) {
++#if defined(USE_BLEED)
++      init_oneshot = bleed_init;
++#endif
+     } else if (!strcmp(backend_name, "sun")) {
+ #if defined(USE_SUN)
+       init_oneshot = sun_init;
+@@ -238,6 +246,9 @@
+ #if defined(USE_SNDIO)
+     sndio_init,
+ #endif
++#if defined(USE_BLEED)
++    bleed_init,
++#endif
+ #if defined(USE_ALSA)
+     alsa_init,
+ #endif
+--- /dev/null
++++ b/media/libcubeb/src/cubeb_bleed.c
+@@ -0,0 +1,619 @@
++/*
++ * Copyright © 2026 Bleed Kernel
++ *
++ * This program is made available under an ISC-style license.  See the
++ * accompanying file LICENSE for details.
++ */
++
++/* the bleed backend. every stream opens /dev/audio0 and gets its own stream on the card, the
++ * kernel mixes them. a thread keeps a little audio queued ahead of the hardware: it asks the
++ * data callback for frames (through the resampler when firefox wants another rate), turns them
++ * into the cards s16 stereo with the volume on, writes them straight into the mapped ring and
++ * commits, then sleeps till the card finishes a period. output only, theres no recording yet */
++
++#include "cubeb-internal.h"
++#include "cubeb/cubeb.h"
++#include "cubeb_resampler.h"
++#include "cubeb_tracing.h"
++#include <bleed/audio.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <pthread.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <unistd.h>
++
++#define BLEED_DEVICE "/dev/audio0"
++
++/* how far ahead of the hardware the stream is kept. it starts at the floor and each time
++ * the card runs dry it grows a bit, emulators deliver the dma in lumps */
++#define BLEED_LEAD_MIN_MS 60
++#define BLEED_LEAD_MAX_MS 250
++#define BLEED_LEAD_XRUN_MS 10
++
++/* the most frames asked of the callback at once */
++#define BLEED_CHUNK_FRAMES 1024
++
++static struct cubeb_ops const bleed_ops;
++
++struct cubeb {
++  struct cubeb_ops const * ops;
++  struct audio_info info; /* what the card does, read once */
++};
++
++struct cubeb_stream {
++  /* Note: Must match cubeb_stream layout in cubeb.c. */
++  cubeb * context;
++  void * user_ptr;
++  /**/
++  cubeb_data_callback data_callback;
++  cubeb_state_callback state_callback;
++  cubeb_resampler * resampler;
++
++  int fd;
++  uint8_t * ring; /* the cards ring for this stream, mapped by ACQUIRE */
++  struct audio_info info;
++  cubeb_stream_params params; /* what firefox asked for */
++
++  pthread_t thread;
++  bool thread_running;
++  pthread_mutex_t mutex; /* guards everything below */
++  bool active;           /* started and not stopped */
++  bool card_running;     /* START was sent since the last STOP */
++  float volume;
++
++  /* positions are bytes since the last START on the card, so the frames from before a stop
++   * are kept here, in the streams own rate */
++  uint64_t base_frames;
++  uint64_t written;   /* bytes committed since START, the kernels write_pos */
++  uint64_t hw_pos;    /* bytes the card has played of it, as of the last look */
++  uint64_t underruns;
++  uint64_t lead;      /* bytes to keep queued */
++
++  void * chunk; /* what the callback fills, in the streams format and channels */
++};
++
++static uint64_t
++ms_bytes(struct audio_info const * info, uint32_t ms)
++{
++  return (uint64_t)ms * info->rate / 1000 * info->frame_bytes;
++}
++
++static size_t
++sample_bytes(cubeb_sample_format format)
++{
++  return format == CUBEB_SAMPLE_FLOAT32NE ? sizeof(float) : sizeof(int16_t);
++}
++
++static int
++bleed_card_info(struct audio_info * info)
++{
++  int fd = open(BLEED_DEVICE, O_WRONLY);
++  if (fd < 0) {
++    return -1;
++  }
++  int r = ioctl(fd, AUDIO_IOC_GET_INFO, info);
++  close(fd);
++  /* the card is always s16 stereo, anything else isnt a card we know */
++  if (r < 0 || info->format != AUDIO_FORMAT_S16LE || info->channels != 2 ||
++      !info->rate || !info->frame_bytes) {
++    return -1;
++  }
++  return 0;
++}
++
++/* card frames to frames in the streams own rate */
++static uint64_t
++to_stream_frames(cubeb_stream * stm, uint64_t card_frames)
++{
++  if (stm->params.rate == stm->info.rate) {
++    return card_frames;
++  }
++  return card_frames * stm->params.rate / stm->info.rate;
++}
++
++static int16_t
++clip16(float s)
++{
++  float v = s * 32767.0f;
++  if (v > 32767.0f) {
++    return 32767;
++  }
++  if (v < -32768.0f) {
++    return -32768;
++  }
++  return (int16_t)v;
++}
++
++/* frames of the streams format into the cards s16 stereo at out */
++static void
++convert(cubeb_stream * stm, int16_t * out, long frames, float volume)
++{
++  uint32_t ch = stm->params.channels;
++  if (stm->params.format == CUBEB_SAMPLE_FLOAT32NE) {
++    float const * in = stm->chunk;
++    for (long i = 0; i < frames; i++) {
++      float l = in[i * ch] * volume;
++      float r = ch > 1 ? in[i * ch + 1] * volume : l;
++      out[i * 2] = clip16(l);
++      out[i * 2 + 1] = clip16(r);
++    }
++  } else {
++    int16_t const * in = stm->chunk;
++    for (long i = 0; i < frames; i++) {
++      int16_t l = (int16_t)(in[i * ch] * volume);
++      int16_t r = ch > 1 ? (int16_t)(in[i * ch + 1] * volume) : l;
++      out[i * 2] = l;
++      out[i * 2 + 1] = r;
++    }
++  }
++}
++
++/* the ring wraps, a write that runs off the end carries on at the start */
++static void
++ring_put(cubeb_stream * stm, uint64_t at, int16_t const * src, uint64_t bytes)
++{
++  uint64_t off = at % stm->info.ring_bytes;
++  uint64_t first = stm->info.ring_bytes - off;
++  if (first > bytes) {
++    first = bytes;
++  }
++  memcpy(stm->ring + off, src, first);
++  if (bytes > first) {
++    memcpy(stm->ring, (uint8_t const *)src + first, bytes - first);
++  }
++}
++
++/* asks the callback for up to want card bytes and commits them. 0 for more to come, 1 once
++ * the callback said it was done, -1 for an error */
++static int
++fill(cubeb_stream * stm, uint64_t want)
++{
++  int16_t out[BLEED_CHUNK_FRAMES * 2];
++  uint64_t fb = stm->info.frame_bytes;
++
++  while (want >= fb) {
++    long frames = (long)(want / fb);
++    if (frames > BLEED_CHUNK_FRAMES) {
++      frames = BLEED_CHUNK_FRAMES;
++    }
++
++    float volume = stm->volume;
++    pthread_mutex_unlock(&stm->mutex);
++    long got = cubeb_resampler_fill(stm->resampler, NULL, NULL, stm->chunk, frames);
++    pthread_mutex_lock(&stm->mutex);
++    if (got < 0 || got > frames) {
++      return -1;
++    }
++
++    convert(stm, out, got, volume);
++    uint64_t bytes = (uint64_t)got * fb;
++    ring_put(stm, stm->written, out, bytes);
++    /* the kernel can take less than asked if the ring is fuller than it looked */
++    uint64_t took = bytes;
++    if (bytes && ioctl(stm->fd, AUDIO_IOC_COMMIT, &took) < 0) {
++      return -1;
++    }
++    stm->written += took;
++    want -= bytes;
++
++    if (got < frames) {
++      return 1;
++    }
++  }
++  return 0;
++}
++
++static void *
++bleed_thread(void * arg)
++{
++  cubeb_stream * stm = arg;
++  int state = CUBEB_STATE_STOPPED;
++  bool draining = false;
++
++  CUBEB_REGISTER_THREAD("cubeb rendering thread");
++  stm->state_callback(stm, stm->user_ptr, CUBEB_STATE_STARTED);
++
++  pthread_mutex_lock(&stm->mutex);
++  for (;;) {
++    if (!stm->active) {
++      state = CUBEB_STATE_STOPPED;
++      break;
++    }
++
++    struct audio_pos pos;
++    if (ioctl(stm->fd, AUDIO_IOC_GET_POS, &pos) < 0) {
++      state = CUBEB_STATE_ERROR;
++      break;
++    }
++    /* the kernel keeps count of what was written, its position is where the next goes */
++    stm->written = pos.write_pos;
++    stm->hw_pos = pos.hw_pos < stm->written ? pos.hw_pos : stm->written;
++
++    /* ran dry, it needs to be further ahead from now on */
++    if (pos.underruns != stm->underruns) {
++      stm->underruns = pos.underruns;
++      uint64_t hi = ms_bytes(&stm->info, BLEED_LEAD_MAX_MS);
++      stm->lead += ms_bytes(&stm->info, BLEED_LEAD_XRUN_MS);
++      if (stm->lead > hi) {
++        stm->lead = hi;
++      }
++    }
++
++    if (draining) {
++      /* everything the callback gave has been heard */
++      if (stm->hw_pos >= stm->written) {
++        state = CUBEB_STATE_DRAINED;
++        break;
++      }
++    } else {
++      uint64_t queued = stm->written - stm->hw_pos;
++      if (queued < stm->lead) {
++        uint64_t want = stm->lead - queued;
++        if (want > pos.writable) {
++          want = pos.writable;
++        }
++        want -= want % stm->info.frame_bytes;
++        int r = fill(stm, want);
++        if (r < 0) {
++          state = CUBEB_STATE_ERROR;
++          break;
++        }
++        draining = r == 1;
++      }
++
++      /* the card starts once theres something on it */
++      if (!stm->card_running && stm->written) {
++        if (ioctl(stm->fd, AUDIO_IOC_START, NULL) < 0) {
++          state = CUBEB_STATE_ERROR;
++          break;
++        }
++        stm->card_running = true;
++      }
++    }
++
++    pthread_mutex_unlock(&stm->mutex);
++    ioctl(stm->fd, AUDIO_IOC_WAIT, NULL);
++    pthread_mutex_lock(&stm->mutex);
++  }
++  pthread_mutex_unlock(&stm->mutex);
++
++  /* stop asks for STOPPED itself, it already knows */
++  if (state != CUBEB_STATE_STOPPED) {
++    stm->state_callback(stm, stm->user_ptr, state);
++  }
++  CUBEB_UNREGISTER_THREAD();
++  return NULL;
++}
++
++int
++bleed_init(cubeb ** context, char const * context_name)
++{
++  (void)context_name;
++  struct audio_info info;
++  if (bleed_card_info(&info) < 0) {
++    return CUBEB_ERROR;
++  }
++
++  cubeb * ctx = calloc(1, sizeof(*ctx));
++  if (!ctx) {
++    return CUBEB_ERROR;
++  }
++  ctx->ops = &bleed_ops;
++  ctx->info = info;
++  *context = ctx;
++  return CUBEB_OK;
++}
++
++static char const *
++bleed_get_backend_id(cubeb * context)
++{
++  (void)context;
++  return "bleed";
++}
++
++static void
++bleed_destroy(cubeb * context)
++{
++  free(context);
++}
++
++static int
++bleed_get_max_channel_count(cubeb * context, uint32_t * max_channels)
++{
++  (void)context;
++  *max_channels = 2;
++  return CUBEB_OK;
++}
++
++static int
++bleed_get_preferred_sample_rate(cubeb * context, uint32_t * rate)
++{
++  *rate = context->info.rate;
++  return CUBEB_OK;
++}
++
++static int
++bleed_get_min_latency(cubeb * context, cubeb_stream_params params,
++                      uint32_t * latency_frames)
++{
++  (void)params;
++  *latency_frames = (uint32_t)(ms_bytes(&context->info, BLEED_LEAD_MIN_MS) /
++                               context->info.frame_bytes);
++  return CUBEB_OK;
++}
++
++static int
++bleed_enumerate_devices(cubeb * context, cubeb_device_type type,
++                        cubeb_device_collection * collection)
++{
++  static char name[] = "Bleed audio";
++  collection->device = NULL;
++  collection->count = 0;
++  if (!(type & CUBEB_DEVICE_TYPE_OUTPUT)) {
++    return CUBEB_OK;
++  }
++
++  cubeb_device_info * dev = calloc(1, sizeof(*dev));
++  if (!dev) {
++    return CUBEB_ERROR;
++  }
++  dev->devid = (cubeb_devid)name;
++  dev->device_id = name;
++  dev->friendly_name = name;
++  dev->group_id = name;
++  dev->vendor_name = NULL;
++  dev->type = CUBEB_DEVICE_TYPE_OUTPUT;
++  dev->state = CUBEB_DEVICE_STATE_ENABLED;
++  dev->preferred = CUBEB_DEVICE_PREF_ALL;
++  dev->format = CUBEB_DEVICE_FMT_S16NE;
++  dev->default_format = CUBEB_DEVICE_FMT_S16NE;
++  dev->max_channels = 2;
++  dev->default_rate = context->info.rate;
++  dev->min_rate = context->info.rate;
++  dev->max_rate = context->info.rate;
++  dev->latency_lo = (uint32_t)(ms_bytes(&context->info, BLEED_LEAD_MIN_MS) /
++                               context->info.frame_bytes);
++  dev->latency_hi = (uint32_t)(ms_bytes(&context->info, BLEED_LEAD_MAX_MS) /
++                               context->info.frame_bytes);
++  collection->device = dev;
++  collection->count = 1;
++  return CUBEB_OK;
++}
++
++static int
++bleed_device_collection_destroy(cubeb * context,
++                                cubeb_device_collection * collection)
++{
++  (void)context;
++  free(collection->device);
++  collection->device = NULL;
++  collection->count = 0;
++  return CUBEB_OK;
++}
++
++static void
++bleed_stream_free(cubeb_stream * stm)
++{
++  if (stm->fd >= 0) {
++    ioctl(stm->fd, AUDIO_IOC_RELEASE, NULL);
++    close(stm->fd);
++  }
++  if (stm->resampler) {
++    cubeb_resampler_destroy(stm->resampler);
++  }
++  free(stm->chunk);
++  pthread_mutex_destroy(&stm->mutex);
++  free(stm);
++}
++
++static int
++bleed_stream_init(cubeb * context, cubeb_stream ** stream,
++                  char const * stream_name, cubeb_devid input_device,
++                  cubeb_stream_params * input_stream_params,
++                  cubeb_devid output_device,
++                  cubeb_stream_params * output_stream_params,
++                  unsigned int latency_frames,
++                  cubeb_data_callback data_callback,
++                  cubeb_state_callback state_callback, void * user_ptr)
++{
++  (void)stream_name;
++  (void)input_device;
++  (void)output_device;
++  (void)latency_frames;
++
++  if (input_stream_params) {
++    return CUBEB_ERROR_NOT_SUPPORTED;
++  }
++  if (!output_stream_params ||
++      (output_stream_params->prefs & CUBEB_STREAM_PREF_LOOPBACK)) {
++    return CUBEB_ERROR_NOT_SUPPORTED;
++  }
++  if (output_stream_params->format != CUBEB_SAMPLE_FLOAT32NE &&
++      output_stream_params->format != CUBEB_SAMPLE_S16NE) {
++    return CUBEB_ERROR_INVALID_FORMAT;
++  }
++  if (output_stream_params->channels < 1 || output_stream_params->channels > 2 ||
++      !output_stream_params->rate) {
++    return CUBEB_ERROR_INVALID_FORMAT;
++  }
++
++  cubeb_stream * stm = calloc(1, sizeof(*stm));
++  if (!stm) {
++    return CUBEB_ERROR;
++  }
++  stm->context = context;
++  stm->user_ptr = user_ptr;
++  stm->data_callback = data_callback;
++  stm->state_callback = state_callback;
++  stm->params = *output_stream_params;
++  stm->volume = 1.0f;
++  stm->fd = -1;
++  pthread_mutex_init(&stm->mutex, NULL);
++
++  stm->fd = open(BLEED_DEVICE, O_WRONLY);
++  if (stm->fd < 0) {
++    bleed_stream_free(stm);
++    return CUBEB_ERROR;
++  }
++  struct audio_map map;
++  if (ioctl(stm->fd, AUDIO_IOC_GET_INFO, &stm->info) < 0 ||
++      ioctl(stm->fd, AUDIO_IOC_ACQUIRE, &map) < 0 || !map.addr) {
++    /* every stream the card can mix is taken */
++    close(stm->fd);
++    stm->fd = -1;
++    bleed_stream_free(stm);
++    return CUBEB_ERROR_DEVICE_UNAVAILABLE;
++  }
++  stm->ring = (uint8_t *)(uintptr_t)map.addr;
++  stm->lead = ms_bytes(&stm->info, BLEED_LEAD_MIN_MS);
++
++  stm->chunk = malloc(BLEED_CHUNK_FRAMES * output_stream_params->channels *
++                      sample_bytes(output_stream_params->format));
++  /* the params say what the card runs at and the rate on its own is the streams, like jack
++   * does it. the same rate both ways is a straight copy through */
++  cubeb_stream_params card = *output_stream_params;
++  card.rate = stm->info.rate;
++  stm->resampler = cubeb_resampler_create(
++      stm, NULL, &card, output_stream_params->rate, data_callback, user_ptr,
++      CUBEB_RESAMPLER_QUALITY_DESKTOP, CUBEB_RESAMPLER_RECLOCK_NONE);
++  if (!stm->chunk || !stm->resampler) {
++    bleed_stream_free(stm);
++    return CUBEB_ERROR;
++  }
++
++  *stream = stm;
++  return CUBEB_OK;
++}
++
++static int
++bleed_stream_start(cubeb_stream * stm)
++{
++  pthread_mutex_lock(&stm->mutex);
++  if (stm->active) {
++    pthread_mutex_unlock(&stm->mutex);
++    return CUBEB_OK;
++  }
++  stm->active = true;
++  pthread_mutex_unlock(&stm->mutex);
++
++  if (pthread_create(&stm->thread, NULL, bleed_thread, stm) != 0) {
++    pthread_mutex_lock(&stm->mutex);
++    stm->active = false;
++    pthread_mutex_unlock(&stm->mutex);
++    return CUBEB_ERROR;
++  }
++  stm->thread_running = true;
++  return CUBEB_OK;
++}
++
++static int
++bleed_stream_stop(cubeb_stream * stm)
++{
++  pthread_mutex_lock(&stm->mutex);
++  bool was = stm->active;
++  stm->active = false;
++  pthread_mutex_unlock(&stm->mutex);
++
++  if (stm->thread_running) {
++    pthread_join(stm->thread, NULL);
++    stm->thread_running = false;
++  }
++
++  /* whatever was queued and not heard is dropped, the next start carries on from what was */
++  pthread_mutex_lock(&stm->mutex);
++  if (stm->card_running) {
++    struct audio_pos pos;
++    if (ioctl(stm->fd, AUDIO_IOC_GET_POS, &pos) == 0) {
++      stm->hw_pos = pos.hw_pos < stm->written ? pos.hw_pos : stm->written;
++    }
++    ioctl(stm->fd, AUDIO_IOC_STOP, NULL);
++    stm->card_running = false;
++  }
++  stm->base_frames += to_stream_frames(stm, stm->hw_pos / stm->info.frame_bytes);
++  stm->written = 0;
++  stm->hw_pos = 0;
++  pthread_mutex_unlock(&stm->mutex);
++
++  if (was) {
++    stm->state_callback(stm, stm->user_ptr, CUBEB_STATE_STOPPED);
++  }
++  return CUBEB_OK;
++}
++
++static void
++bleed_stream_destroy(cubeb_stream * stm)
++{
++  bleed_stream_stop(stm);
++  bleed_stream_free(stm);
++}
++
++static int
++bleed_stream_get_position(cubeb_stream * stm, uint64_t * position)
++{
++  pthread_mutex_lock(&stm->mutex);
++  uint64_t hw = stm->hw_pos;
++  if (stm->card_running) {
++    struct audio_pos pos;
++    if (ioctl(stm->fd, AUDIO_IOC_GET_POS, &pos) == 0) {
++      hw = pos.hw_pos < stm->written ? pos.hw_pos : stm->written;
++      stm->hw_pos = hw;
++    }
++  }
++  *position = stm->base_frames + to_stream_frames(stm, hw / stm->info.frame_bytes);
++  pthread_mutex_unlock(&stm->mutex);
++  return CUBEB_OK;
++}
++
++static int
++bleed_stream_get_latency(cubeb_stream * stm, uint32_t * latency)
++{
++  pthread_mutex_lock(&stm->mutex);
++  uint64_t queued = stm->written > stm->hw_pos ? stm->written - stm->hw_pos : 0;
++  *latency = (uint32_t)to_stream_frames(stm, queued / stm->info.frame_bytes);
++  pthread_mutex_unlock(&stm->mutex);
++  return CUBEB_OK;
++}
++
++static int
++bleed_stream_set_volume(cubeb_stream * stm, float volume)
++{
++  if (volume < 0.0f) {
++    volume = 0.0f;
++  }
++  if (volume > 1.0f) {
++    volume = 1.0f;
++  }
++  pthread_mutex_lock(&stm->mutex);
++  stm->volume = volume;
++  pthread_mutex_unlock(&stm->mutex);
++  return CUBEB_OK;
++}
++
++static struct cubeb_ops const bleed_ops = {
++    .init = bleed_init,
++    .get_backend_id = bleed_get_backend_id,
++    .get_max_channel_count = bleed_get_max_channel_count,
++    .get_min_latency = bleed_get_min_latency,
++    .get_preferred_sample_rate = bleed_get_preferred_sample_rate,
++    .get_supported_input_processing_params = NULL,
++    .enumerate_devices = bleed_enumerate_devices,
++    .device_collection_destroy = bleed_device_collection_destroy,
++    .destroy = bleed_destroy,
++    .stream_init = bleed_stream_init,
++    .stream_destroy = bleed_stream_destroy,
++    .stream_start = bleed_stream_start,
++    .stream_stop = bleed_stream_stop,
++    .stream_get_position = bleed_stream_get_position,
++    .stream_get_latency = bleed_stream_get_latency,
++    .stream_set_volume = bleed_stream_set_volume,
++    .stream_set_name = NULL,
++    .stream_get_current_device = NULL,
++    .stream_set_input_mute = NULL,
++    .stream_set_input_processing_params = NULL,
++    .stream_device_destroy = NULL,
++    .stream_register_device_changed_callback = NULL,
++    .register_device_collection_changed = NULL};
+--- a/media/libcubeb/src/moz.build
++++ b/media/libcubeb/src/moz.build
+@@ -33,6 +33,7 @@
+     or CONFIG["MOZ_OPENSL"]
+     or CONFIG["MOZ_AUDIOUNIT_RUST"]
+     or CONFIG["MOZ_WASAPI"]
++    or CONFIG["MOZ_WIDGET_TOOLKIT"] == "bleed"
+ ):
+     SOURCES += [
+         'cubeb_resampler.cpp',
+@@ -56,6 +57,13 @@
+     ]
+     DEFINES['USE_OSS'] = True
+ 
++# the bleed desktop has its own card device, the kernel mixes every stream on it
++if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'bleed':
++    SOURCES += [
++        'cubeb_bleed.c',
++    ]
++    DEFINES['USE_BLEED'] = True
++
+ if CONFIG['MOZ_SNDIO']:
+     SOURCES += [
+         'cubeb_sndio.c',
+--- a/modules/libpref/init/StaticPrefList.yaml
++++ b/modules/libpref/init/StaticPrefList.yaml
+@@ -7750,7 +7750,7 @@
+   value: false
+   mirror: always
+ 
+-#if defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_ANDROID)
++#if defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_BLEED)
+   # -1 = disabled (no preblend, original behavior)
+   #  0 = sRGB transfer
+   # >0 = value/100.0 exponent
+--- a/netwerk/build/components.conf
++++ b/netwerk/build/components.conf
+@@ -884,7 +884,7 @@
+         'headers': ['/netwerk/system/android/nsAndroidNetworkLinkService.h'],
+         'init_method': 'Init',
+     }
+-elif buildconfig.substs['OS_ARCH'] == 'Linux':
++elif buildconfig.substs['OS_ARCH'] == 'Linux' and toolkit != 'bleed':
+     link_service = {
+         'type': 'nsNetworkLinkService',
+         'headers': ['/netwerk/system/linux/nsNetworkLinkService.h'],
+--- a/netwerk/system/LinkServiceCommon.cpp
++++ b/netwerk/system/LinkServiceCommon.cpp
+@@ -26,3 +26,9 @@
+     aSha1.update(&timestamp, sizeof(timestamp));
+   }
+ }
++
++#ifdef MOZ_WIDGET_BLEED
++#  include "nsINetworkLinkService.h"
++// no link service on bleed, so nothing knows about an ipv6 address
++bool nsINetworkLinkService::HasNonLocalIPv6Address() { return false; }
++#endif
+--- a/netwerk/system/moz.build
++++ b/netwerk/system/moz.build
+@@ -14,7 +14,7 @@
+ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "android":
+     DIRS += ["android", "netlink"]
+ 
+-elif CONFIG["OS_ARCH"] == "Linux":
++elif CONFIG["OS_ARCH"] == "Linux" and CONFIG["MOZ_WIDGET_TOOLKIT"] != "bleed":
+     DIRS += ["linux", "netlink"]
+ 
+ SOURCES += [
+--- a/python/mozbuild/mozbuild/action/check_binary.py
++++ b/python/mozbuild/mozbuild/action/check_binary.py
+@@ -207,6 +207,10 @@
+ 
+ def check_networking(binary):
+     retcode = 0
++    # bleed builds rust without lto while porting, so socket2s recv/send stay in gkrust
++    # unreachable instead of being dropped. nothing calls them
++    if buildconfig.substs.get("MOZ_WIDGET_TOOLKIT") == "bleed":
++        return retcode
+     networking_functions = set([
+         # socketpair is not concerning; it is restricted to AF_UNIX
+         "recv",
+--- a/services/settings/Utils.sys.mjs
++++ b/services/settings/Utils.sys.mjs
+@@ -212,11 +212,14 @@
+    */
+   get isOffline() {
+     try {
++      // bleed has no link service and can have the captive portal service off
+       return (
+         Services.io.offline ||
+-        lazy.CaptivePortalService.state ==
+-          lazy.CaptivePortalService.LOCKED_PORTAL ||
+-        !lazy.gNetworkLinkService.isLinkUp
++        ("@mozilla.org/network/captive-portal-service;1" in Cc &&
++          lazy.CaptivePortalService.state ==
++            lazy.CaptivePortalService.LOCKED_PORTAL) ||
++        ("@mozilla.org/network/network-link-service;1" in Cc &&
++          !lazy.gNetworkLinkService.isLinkUp)
+       );
+     } catch (ex) {
+       log.warn("Could not determine network status.", ex);
+--- a/third_party/sqlite3/src/sqlite3.c
++++ b/third_party/sqlite3/src/sqlite3.c
+@@ -45215,7 +45215,14 @@
+ #endif
+     }
+ 
++#ifdef __bleed__
++    /* bleed cant map a file shared and writable yet, and every connection to a database
++    ** is in one process there anyway, so the wal index lives on the heap like it does in
++    ** exclusive mode */
++    if( 0 ){
++#else
+     if( pInode->bProcessLock==0 ){
++#endif
+       if( 0==sqlite3_uri_boolean(pDbFd->zPath, "readonly_shm", 0) ){
+         pShmNode->hShm = robust_open(zShm, O_RDWR|O_CREAT|O_NOFOLLOW,
+                                      (sStat.st_mode&0777));
+--- a/toolkit/components/processtools/moz.build
++++ b/toolkit/components/processtools/moz.build
+@@ -36,7 +36,7 @@
+ 
+ # Platform-specific implementations of `ProcInfo`.
+ toolkit = CONFIG["MOZ_WIDGET_TOOLKIT"]
+-if toolkit == "gtk" or toolkit == "android":
++if toolkit in ("gtk", "android", "bleed"):
+     if CONFIG["OS_TARGET"] in ("FreeBSD", "OpenBSD"):
+         UNIFIED_SOURCES += ["ProcInfo_bsd.cpp"]
+     elif CONFIG["OS_TARGET"] == "SunOS":
+--- a/toolkit/moz.configure
++++ b/toolkit/moz.configure
+@@ -236,10 +236,80 @@
+ imply_option("--enable-replace-malloc", dmd, when=compile_environment)
+ 
+ 
+-# midir-based Web MIDI support
++# Default toolkit
+ # ==============================================================
+ @depends(target)
+-def midir_linux_support(target):
++def toolkit_choices(target):
++    if target.os == "WINNT":
++        return ("cairo-windows",)
++    elif target.os == "OSX":
++        return ("cairo-cocoa",)
++    elif target.os == "iOS":
++        return ("cairo-uikit",)
++    elif target.os == "Android":
++        return ("cairo-android",)
++    else:
++        # cairo-gtk3 - X11 backend with optional Wayland backend (auto detected)
++        # cairo-gtk3-wayland - Wayland backend with optional X11 backend (auto detected)
++        # cairo-gtk3-x11-wayland - builds explicitly with X11 & Wayland backends
++        return (
++            "cairo-gtk3",
++            "cairo-bleed",
++            "cairo-gtk3-wayland",
++            "cairo-gtk3-x11-wayland",
++            "cairo-gtk3-wayland-only",
++            "cairo-gtk3-x11-only",
++        )
++
++
++@depends(toolkit_choices)
++def toolkit_default(choices):
++    return choices[0]
++
++
++option(
++    "--enable-default-toolkit",
++    nargs=1,
++    choices=toolkit_choices,
++    default=toolkit_default,
++    help="Select default toolkit",
++)
++
++
++@depends("--enable-default-toolkit")
++def full_toolkit(value):
++    if value:
++        return value[0]
++
++
++@depends(full_toolkit)
++def toolkit(toolkit):
++    if toolkit.startswith("cairo-gtk3"):
++        widget_toolkit = "gtk"
++    else:
++        widget_toolkit = toolkit.replace("cairo-", "")
++    return widget_toolkit
++
++
++set_config("MOZ_WIDGET_TOOLKIT", toolkit)
++
++
++@depends(toolkit)
++def toolkit_define(toolkit):
++    if toolkit != "windows":
++        return "MOZ_WIDGET_%s" % toolkit.upper()
++
++
++set_define(toolkit_define, True)
++
++
++# midir-based Web MIDI support
++# ==============================================================
++@depends(target, toolkit)
++def midir_linux_support(target, toolkit):
++    # bleed has no alsa
++    if toolkit == "bleed":
++        return False
+     return (
+         target.kernel == "Linux" and target.os != "Android" and target.cpu != "riscv64"
+     )
+@@ -517,72 +587,6 @@
+ set_config("L10NBASEDIR", l10n_base)
+ 
+ 
+-# Default toolkit
+-# ==============================================================
+-@depends(target)
+-def toolkit_choices(target):
+-    if target.os == "WINNT":
+-        return ("cairo-windows",)
+-    elif target.os == "OSX":
+-        return ("cairo-cocoa",)
+-    elif target.os == "iOS":
+-        return ("cairo-uikit",)
+-    elif target.os == "Android":
+-        return ("cairo-android",)
+-    else:
+-        # cairo-gtk3 - X11 backend with optional Wayland backend (auto detected)
+-        # cairo-gtk3-wayland - Wayland backend with optional X11 backend (auto detected)
+-        # cairo-gtk3-x11-wayland - builds explicitly with X11 & Wayland backends
+-        return (
+-            "cairo-gtk3",
+-            "cairo-gtk3-wayland",
+-            "cairo-gtk3-x11-wayland",
+-            "cairo-gtk3-wayland-only",
+-            "cairo-gtk3-x11-only",
+-        )
+-
+-
+-@depends(toolkit_choices)
+-def toolkit_default(choices):
+-    return choices[0]
+-
+-
+-option(
+-    "--enable-default-toolkit",
+-    nargs=1,
+-    choices=toolkit_choices,
+-    default=toolkit_default,
+-    help="Select default toolkit",
+-)
+-
+-
+-@depends("--enable-default-toolkit")
+-def full_toolkit(value):
+-    if value:
+-        return value[0]
+-
+-
+-@depends(full_toolkit)
+-def toolkit(toolkit):
+-    if toolkit.startswith("cairo-gtk3"):
+-        widget_toolkit = "gtk"
+-    else:
+-        widget_toolkit = toolkit.replace("cairo-", "")
+-    return widget_toolkit
+-
+-
+-set_config("MOZ_WIDGET_TOOLKIT", toolkit)
+-
+-
+-@depends(toolkit)
+-def toolkit_define(toolkit):
+-    if toolkit != "windows":
+-        return "MOZ_WIDGET_%s" % toolkit.upper()
+-
+-
+-set_define(toolkit_define, True)
+-
+-
+ @depends(toolkit)
+ def toolkit_gtk(toolkit):
+     return toolkit == "gtk"
+@@ -729,7 +733,7 @@
+ # ==============================================================
+ @depends(toolkit)
+ def pdf_printing(toolkit):
+-    if toolkit in ("windows", "gtk", "android"):
++    if toolkit in ("windows", "gtk", "android", "bleed"):
+         return True
+ 
+ 
+@@ -1305,9 +1309,10 @@
+ 
+ # Build Freetype in the tree
+ # ==============================================================
+-@depends(target)
+-def tree_freetype(target):
+-    if target.os == "Android":
++@depends(target, toolkit)
++def tree_freetype(target, toolkit):
++    # bleed has no system freetype, it uses the in tree one like android
++    if target.os == "Android" or toolkit == "bleed":
+         return True
+ 
+ 
+--- a/toolkit/xre/nsAppRunner.cpp
++++ b/toolkit/xre/nsAppRunner.cpp
+@@ -4387,7 +4387,8 @@
+   }
+ 
+   if (gfxPlatform::IsHeadless()) {
+-#if defined(XP_WIN) || defined(MOZ_WIDGET_GTK) || defined(XP_MACOSX)
++#if defined(XP_WIN) || defined(MOZ_WIDGET_GTK) || defined(XP_MACOSX) || \
++    defined(MOZ_WIDGET_BLEED)
+     printf_stderr("*** You are running in headless mode.\n");
+ #else
+     Output(
+--- a/toolkit/xre/nsXREDirProvider.cpp
++++ b/toolkit/xre/nsXREDirProvider.cpp
+@@ -1165,6 +1165,10 @@
+   if (!homeDir || !*homeDir) return NS_ERROR_FAILURE;
+ 
+ #  ifdef ANDROID /* We want (ProfD == ProfLD) on Android. */
++  MOZ_TRY(NS_NewNativeLocalFile(nsDependentCString(homeDir),
++                                getter_AddRefs(localDir)));
++#  elif defined(MOZ_WIDGET_BLEED)
++  // $HOME for profiles and cache alike (they go in .mozilla under it), no xdg on bleed
+   MOZ_TRY(NS_NewNativeLocalFile(nsDependentCString(homeDir),
+                                 getter_AddRefs(localDir)));
+ #  else
+--- a/tools/power/moz.build
++++ b/tools/power/moz.build
+@@ -10,6 +10,7 @@
+ if (
+     CONFIG["OS_ARCH"] == "Linux"
+     and CONFIG["OS_TARGET"] != "Android"
++    and CONFIG["MOZ_WIDGET_TOOLKIT"] != "bleed"
+     and CONFIG["TARGET_CPU"] in ("x86", "x86_64")
+ ):
+     do_rapl = True
+--- a/tools/profiler/core/PowerCounters.h
++++ b/tools/profiler/core/PowerCounters.h
+@@ -51,7 +51,8 @@
+ class PowerCounters {
+  public:
+ #if defined(GP_OS_windows) || defined(GP_OS_darwin) || \
+-    defined(GP_PLAT_amd64_linux) || defined(GP_PLAT_arm64_android)
++    (defined(GP_PLAT_amd64_linux) && !defined(MOZ_WIDGET_BLEED)) || \
++    defined(GP_PLAT_arm64_android)
+   explicit PowerCounters();
+ #else
+   explicit PowerCounters() {};
+--- a/tools/profiler/moz.build
++++ b/tools/profiler/moz.build
+@@ -99,7 +99,7 @@
+         "lul/LulMain.cpp",
+         "lul/platform-linux-lul.cpp",
+     ]
+-    if CONFIG["TARGET_CPU"] == "x86_64":
++    if CONFIG["TARGET_CPU"] == "x86_64" and CONFIG["MOZ_WIDGET_TOOLKIT"] != "bleed":
+         UNIFIED_SOURCES += [
+             "core/PowerCounters-linux.cpp",
+         ]
+--- a/uriloader/exthandler/moz.build
++++ b/uriloader/exthandler/moz.build
+@@ -82,7 +82,7 @@
+         osdir + "/nsOSHelperAppService.cpp",
+     ]
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("gtk", "bleed"):
+     UNIFIED_SOURCES += [
+         "unix/nsGNOMERegistry.cpp",
+         "unix/nsMIMEInfoUnix.cpp",
+--- a/widget/Theme.cpp
++++ b/widget/Theme.cpp
+@@ -113,7 +113,7 @@
+ 
+ }  // namespace
+ 
+-#ifdef ANDROID
++#if defined(ANDROID) || defined(MOZ_WIDGET_BLEED)
+ already_AddRefed<Theme> do_CreateNativeThemeDoNotUseDirectly() {
+   // Android doesn't have a native theme.
+   return do_AddRef(new Theme(Theme::ScrollbarStyle()));
+@@ -1503,6 +1503,9 @@
+   return MakeUnique<ScrollbarDrawingGTK>();
+ #elif ANDROID
+   return MakeUnique<ScrollbarDrawingAndroid>();
++#elif defined(MOZ_WIDGET_BLEED)
++  // classic always-there scrollbars, closest to the desktops 9x ones
++  return MakeUnique<ScrollbarDrawingWin>();
+ #else
+ #  error "Unknown platform, need scrollbar implementation."
+ #endif
+--- /dev/null
++++ b/widget/bleed/GfxInfo.cpp
+@@ -0,0 +1,207 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "GfxInfo.h"
++#include "nsServiceManagerUtils.h"
++
++namespace mozilla {
++namespace widget {
++
++#ifdef DEBUG
++NS_IMPL_ISUPPORTS_INHERITED(GfxInfo, GfxInfoBase, nsIGfxInfoDebug)
++#endif
++
++GfxInfo::GfxInfo() {}
++
++GfxInfo::~GfxInfo() {}
++
++NS_IMETHODIMP
++GfxInfo::GetDWriteEnabled(bool* aEnabled) { return NS_ERROR_FAILURE; }
++
++NS_IMETHODIMP
++GfxInfo::GetEmbeddedInFirefoxReality(bool* aEmbeddedInFirefoxReality) {
++  *aEmbeddedInFirefoxReality = false;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetHasBattery(bool* aHasBattery) { return NS_ERROR_NOT_IMPLEMENTED; }
++
++NS_IMETHODIMP
++GfxInfo::GetDWriteVersion(nsAString& aDwriteVersion) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetCleartypeParameters(nsAString& aCleartypeParams) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetWindowProtocol(nsAString& aWindowProtocol) {
++  return NS_ERROR_NOT_IMPLEMENTED;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetTestType(nsAString& aTestType) { return NS_ERROR_NOT_IMPLEMENTED; }
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDescription(nsAString& aAdapterDescription) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDescription2(nsAString& aAdapterDescription) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterRAM(uint32_t* aAdapterRAM) { return NS_ERROR_FAILURE; }
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterRAM2(uint32_t* aAdapterRAM) { return NS_ERROR_FAILURE; }
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverVendor(nsAString& aAdapterDriverVendor) {
++  aAdapterDriverVendor.AssignLiteral("");
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverVendor2(nsAString& aAdapterDriverVendor2) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriver(nsAString& aAdapterDriver) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriver2(nsAString& aAdapterDriver) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverVersion(nsAString& aAdapterDriverVersion) {
++  aAdapterDriverVersion = EmptyString();
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverVersion2(nsAString& aAdapterDriverVersion) {
++  aAdapterDriverVersion = EmptyString();
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverDate(nsAString& aAdapterDriverDate) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverDate2(nsAString& aAdapterDriverDate) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterVendorID(nsAString& aAdapterVendorID) {
++  aAdapterVendorID = EmptyString();
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterVendorID2(nsAString& aAdapterVendorID) {
++  aAdapterVendorID = EmptyString();
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDeviceID(nsAString& aAdapterDeviceID) {
++  aAdapterDeviceID = EmptyString();
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDeviceID2(nsAString& aAdapterDeviceID) {
++  aAdapterDeviceID = EmptyString();
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterSubsysID(nsAString& aAdapterSubsysID) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterSubsysID2(nsAString& aAdapterSubsysID) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetIsGPU2Active(bool* aIsGPU2Active) { return NS_ERROR_FAILURE; }
++
++NS_IMETHODIMP
++GfxInfo::GetDrmRenderDevice(nsACString& aDrmRenderDevice) {
++  return NS_ERROR_NOT_IMPLEMENTED;
++}
++
++const nsTArray<RefPtr<GfxDriverInfo>>& GfxInfo::GetGfxDriverInfo() {
++  return *sDriverInfo;
++}
++
++// bleed has no gpu driver, everything is drawn in software (software webrender, skia).
++// the few features that dont need one stay on
++nsresult GfxInfo::GetFeatureStatusImpl(
++    int32_t aFeature, int32_t* aStatus, nsAString& aSuggestedDriverVersion,
++    const nsTArray<RefPtr<GfxDriverInfo>>& aDriverInfo, nsACString& aFailureId,
++    OperatingSystem* aOS /* = nullptr */) {
++  NS_ENSURE_ARG_POINTER(aStatus);
++  aSuggestedDriverVersion.SetIsVoid(true);
++  if (aOS) {
++    *aOS = OperatingSystem::Linux;
++  }
++
++  switch (aFeature) {
++    case nsIGfxInfo::FEATURE_BACKDROP_FILTER:
++    case nsIGfxInfo::FEATURE_VIDEO_SOFTWARE_OVERLAY:
++      *aStatus = nsIGfxInfo::FEATURE_STATUS_OK;
++      break;
++    default:
++      *aStatus = nsIGfxInfo::FEATURE_BLOCKED_DEVICE;
++      aFailureId = "FEATURE_FAILURE_BLEED_NO_GPU";
++      break;
++  }
++  return NS_OK;
++}
++
++#ifdef DEBUG
++
++// Implement nsIGfxInfoDebug
++
++NS_IMETHODIMP GfxInfo::SpoofVendorID(const nsAString& aVendorID) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP GfxInfo::SpoofDeviceID(const nsAString& aDeviceID) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP GfxInfo::SpoofDriverVersion(const nsAString& aDriverVersion) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP GfxInfo::SpoofOSVersion(uint32_t aVersion) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP GfxInfo::SpoofOSVersionEx(uint32_t aMajor, uint32_t aMinor,
++                                        uint32_t aBuild, uint32_t aRevision) {
++  return NS_ERROR_FAILURE;
++}
++
++#endif
++
++}  // namespace widget
++}  // namespace mozilla
+--- /dev/null
++++ b/widget/bleed/GfxInfo.h
+@@ -0,0 +1,87 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef _mozilla_widget_GfxInfo_h_
++#define _mozilla_widget_GfxInfo_h_
++
++#include "GfxInfoBase.h"
++#include "GfxDriverInfo.h"
++
++#include "nsString.h"
++
++namespace mozilla {
++
++namespace gl {
++class GLContext;
++}
++
++namespace widget {
++
++class GfxInfo : public GfxInfoBase {
++ private:
++  ~GfxInfo();
++
++ public:
++  GfxInfo();
++
++  OperatingSystem GetOperatingSystem() override { return OperatingSystem::Linux; }
++
++  // We only declare the subset of nsIGfxInfo that we actually implement. The
++  // rest is brought forward from GfxInfoBase.
++  NS_IMETHOD GetDWriteEnabled(bool* aDWriteEnabled) override;
++  NS_IMETHOD GetEmbeddedInFirefoxReality(
++      bool* aEmbeddedInFirefoxReality) override;
++  NS_IMETHOD GetHasBattery(bool* aHasBattery) override;
++  NS_IMETHOD GetDWriteVersion(nsAString& aDwriteVersion) override;
++  NS_IMETHOD GetCleartypeParameters(nsAString& aCleartypeParams) override;
++  NS_IMETHOD GetWindowProtocol(nsAString& aWindowProtocol) override;
++  NS_IMETHOD GetTestType(nsAString& aTestType) override;
++  NS_IMETHOD GetAdapterDescription(nsAString& aAdapterDescription) override;
++  NS_IMETHOD GetAdapterDriver(nsAString& aAdapterDriver) override;
++  NS_IMETHOD GetAdapterVendorID(nsAString& aAdapterVendorID) override;
++  NS_IMETHOD GetAdapterDeviceID(nsAString& aAdapterDeviceID) override;
++  NS_IMETHOD GetAdapterSubsysID(nsAString& aAdapterSubsysID) override;
++  NS_IMETHOD GetAdapterRAM(uint32_t* aAdapterRAM) override;
++  NS_IMETHOD GetAdapterDriverVendor(nsAString& aAdapterDriverVendor) override;
++  NS_IMETHOD GetAdapterDriverVersion(nsAString& aAdapterDriverVersion) override;
++  NS_IMETHOD GetAdapterDriverDate(nsAString& aAdapterDriverDate) override;
++  NS_IMETHOD GetAdapterDescription2(nsAString& aAdapterDescription) override;
++  NS_IMETHOD GetAdapterDriver2(nsAString& aAdapterDriver) override;
++  NS_IMETHOD GetAdapterVendorID2(nsAString& aAdapterVendorID) override;
++  NS_IMETHOD GetAdapterDeviceID2(nsAString& aAdapterDeviceID) override;
++  NS_IMETHOD GetAdapterSubsysID2(nsAString& aAdapterSubsysID) override;
++  NS_IMETHOD GetAdapterRAM2(uint32_t* aAdapterRAM) override;
++  NS_IMETHOD GetAdapterDriverVendor2(nsAString& aAdapterDriverVendor) override;
++  NS_IMETHOD GetAdapterDriverVersion2(
++      nsAString& aAdapterDriverVersion) override;
++  NS_IMETHOD GetAdapterDriverDate2(nsAString& aAdapterDriverDate) override;
++  NS_IMETHOD GetIsGPU2Active(bool* aIsGPU2Active) override;
++  NS_IMETHOD GetDrmRenderDevice(nsACString& aDrmRenderDevice) override;
++  using GfxInfoBase::GetFeatureStatus;
++  using GfxInfoBase::GetFeatureSuggestedDriverVersion;
++
++#ifdef DEBUG
++  NS_DECL_ISUPPORTS_INHERITED
++
++  NS_IMETHOD SpoofVendorID(const nsAString& aVendorID) override;
++  NS_IMETHOD SpoofDeviceID(const nsAString& aDeviceID) override;
++  NS_IMETHOD SpoofDriverVersion(const nsAString& aDriverVersion) override;
++  NS_IMETHOD SpoofOSVersion(uint32_t aVersion) override;
++  NS_IMETHOD SpoofOSVersionEx(uint32_t aMajor, uint32_t aMinor, uint32_t aBuild,
++                              uint32_t aRevision) override;
++#endif
++
++ protected:
++  nsresult GetFeatureStatusImpl(
++      int32_t aFeature, int32_t* aStatus, nsAString& aSuggestedDriverVersion,
++      const nsTArray<RefPtr<GfxDriverInfo>>& aDriverInfo,
++      nsACString& aFailureId, OperatingSystem* aOS = nullptr) override;
++  const nsTArray<RefPtr<GfxDriverInfo>>& GetGfxDriverInfo() override;
++};
++
++}  // namespace widget
++}  // namespace mozilla
++
++#endif /* _mozilla_widget_GfxInfo_h_ */
+--- /dev/null
++++ b/widget/bleed/MediaKeysEventSourceFactory.cpp
+@@ -0,0 +1,14 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "MediaKeysEventSourceFactory.h"
++
++namespace mozilla::widget {
++
++// no media keys on bleed yet
++mozilla::dom::MediaControlKeySource* CreateMediaControlKeySource() {
++  return nullptr;
++}
++
++}  // namespace mozilla::widget
+--- /dev/null
++++ b/widget/bleed/components.conf
+@@ -0,0 +1,79 @@
++# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++Headers = [
++    '/widget/bleed/nsWidgetFactory.h',
++]
++
++InitFunc = 'nsWidgetBleedModuleCtor'
++UnloadFunc = 'nsWidgetBleedModuleDtor'
++
++Classes = [
++    {
++        'cid': '{6987230e-0098-4e78-bc5f-1493ee7519fa}',
++        'contract_ids': ['@mozilla.org/widget/useridleservice;1'],
++        'singleton': True,
++        'type': 'nsUserIdleServiceBleed',
++        'headers': ['/widget/bleed/nsUserIdleServiceBleed.h'],
++        'constructor': 'nsUserIdleServiceBleed::GetInstance',
++    },
++    {
++        'cid': '{2d96b3df-c051-11d1-a827-0040959a28c9}',
++        'contract_ids': ['@mozilla.org/widget/appshell/bleed;1'],
++        'legacy_constructor': 'nsAppShellConstructor',
++        'headers': ['/widget/bleed/nsWidgetFactory.h'],
++        'processes': ProcessSelector.ALLOW_IN_GPU_RDD_VR_SOCKET_UTILITY_AND_GMPLUGIN_PROCESS,
++    },
++    {
++        'cid': '{d594094c-28b6-466b-97d7-66c039c3dea9}',
++        'contract_ids': ['@mozilla.org/gfx/parent/screenmanager;1'],
++        'singleton': True,
++        'type': 'mozilla::widget::ScreenManager',
++        'headers': ['mozilla/widget/ScreenManager.h'],
++        'constructor': 'mozilla::widget::ScreenManager::GetAddRefedSingleton',
++        'processes': ProcessSelector.MAIN_PROCESS_ONLY,
++    },
++    {
++        'cid': '{8b5314bc-db01-11d2-96ce-0060b0fb9956}',
++        'contract_ids': ['@mozilla.org/widget/transferable;1'],
++        'type': 'nsTransferable',
++        'headers': ['/widget/nsTransferable.h'],
++    },
++    {
++        'cid': '{77221d5a-1dd2-11b2-8c69-c710f15d2ed5}',
++        'contract_ids': ['@mozilla.org/widget/clipboardhelper;1'],
++        'type': 'nsClipboardHelper',
++        'headers': ['/widget/nsClipboardHelper.h'],
++    },
++    {
++        'cid': '{948a0023-e3a7-11d2-96cf-0060b0fb9956}',
++        'contract_ids': ['@mozilla.org/widget/htmlformatconverter;1'],
++        'type': 'nsHTMLFormatConverter',
++        'headers': ['/widget/nsHTMLFormatConverter.h'],
++    },
++    {
++        'name': 'GfxInfo',
++        'cid': '{d755a760-9f27-11df-0800-200c9a664242}',
++        'contract_ids': ['@mozilla.org/gfx/info;1'],
++        'type': 'mozilla::widget::GfxInfo',
++        'headers': ['/widget/bleed/GfxInfo.h'],
++        'init_method': 'Init',
++    },
++    {
++        'cid': '{9d5adbb9-1da4-4162-acba-b373fe3ae837}',
++        'contract_ids': ['@mozilla.org/widget/parent/clipboard;1'],
++        'interfaces': ['nsIClipboard'],
++        'type': 'mozilla::widget::HeadlessClipboard',
++        'headers': ['/widget/headless/HeadlessClipboard.h'],
++        'processes': ProcessSelector.MAIN_PROCESS_ONLY,
++    },
++    {
++        'cid': '{b148eed2-236d-11d3-b35c-00a0cc3c1cde}',
++        'contract_ids': ['@mozilla.org/sound;1'],
++        'type': 'mozilla::widget::HeadlessSound',
++        'headers': ['/widget/headless/HeadlessSound.h'],
++        'processes': ProcessSelector.MAIN_PROCESS_ONLY,
++    },
++]
+--- /dev/null
++++ b/widget/bleed/moz.build
+@@ -0,0 +1,44 @@
++# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++# the bleed widget toolkit. windows are crime-scene desktop windows the compositor draws
++# into in software (nsWindow), libcrime comes from the toolchain sysroot
++
++with Files("**"):
++    BUG_COMPONENT = ("Core", "Widget")
++
++EXPORTS += [
++    "nsLookAndFeel.h",
++    "nsWindow.h",
++]
++
++UNIFIED_SOURCES += [
++    "GfxInfo.cpp",
++    "MediaKeysEventSourceFactory.cpp",
++    "nsAppShell.cpp",
++    "nsBidiKeyboard.cpp",
++    "nsLookAndFeel.cpp",
++    "nsUserIdleServiceBleed.cpp",
++    "nsWidgetFactory.cpp",
++    "nsWindow.cpp",
++]
++
++XPCOM_MANIFESTS += [
++    "components.conf",
++]
++
++include("/ipc/chromium/chromium-config.mozbuild")
++
++FINAL_LIBRARY = "xul"
++
++OS_LIBS += ["crime"]
++
++LOCAL_INCLUDES += [
++    "/layout/base",
++    "/layout/generic",
++    "/widget",
++    "/widget/headless",
++    "/xpcom/components",
++]
+--- /dev/null
++++ b/widget/bleed/nsAppShell.cpp
+@@ -0,0 +1,114 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsAppShell.h"
++
++#include <errno.h>
++#include <fcntl.h>
++#include <poll.h>
++#include <unistd.h>
++
++#include "HeadlessScreenHelper.h"
++#include "gfxPlatform.h"
++#include "mozilla/widget/Screen.h"
++#include "nsWindow.h"
++#include "mozilla/Hal.h"
++#include "mozilla/widget/ScreenManager.h"
++#include "nsXULAppAPI.h"
++
++// firefox builds with hidden visibility by default, this one comes from libc.so
++#pragma GCC visibility push(default)
++#include <bleed/display.h>
++#pragma GCC visibility pop
++
++using namespace mozilla;
++using namespace mozilla::widget;
++
++// the desktops taskbar along the bottom, windows dont go under it
++static constexpr int32_t kTaskbarHeight = 38;
++
++// one screen the size of the framebuffer
++class DesktopScreenHelper final : public ScreenManager::Helper {
++ public:
++  DesktopScreenHelper() {
++    struct fb_info fb = {};
++    int32_t width = 1366, height = 768;
++    if (get_fb_metadata(&fb) == 0 && fb.width && fb.height) {
++      width = int32_t(fb.width);
++      height = int32_t(fb.height);
++    }
++    LayoutDeviceIntRect rect(0, 0, width, height);
++    LayoutDeviceIntRect avail(0, 0, width, std::max(height - kTaskbarHeight, 1));
++    AutoTArray<RefPtr<Screen>, 1> screens;
++    screens.AppendElement(MakeRefPtr<Screen>(
++        rect, avail, 24, 24, 0, DesktopToLayoutDeviceScale(),
++        CSSToLayoutDeviceScale(), 96.0f, Screen::IsPseudoDisplay::No,
++        Screen::IsHDR::No, 80.0f, 1000.0f));
++    ScreenManager::Refresh(std::move(screens));
++  }
++};
++
++nsAppShell::~nsAppShell() {
++  if (mPipeFDs[0] >= 0) {
++    close(mPipeFDs[0]);
++  }
++  if (mPipeFDs[1] >= 0) {
++    close(mPipeFDs[1]);
++  }
++}
++
++nsresult nsAppShell::Init() {
++  hal::Init();
++
++  if (pipe2(mPipeFDs, O_CLOEXEC | O_NONBLOCK) != 0) {
++    return NS_ERROR_FAILURE;
++  }
++
++  // headless is MOZ_HEADLESS_WIDTH x HEIGHT, otherwise the framebuffer
++  if (XRE_IsParentProcess()) {
++    ScreenManager& screenManager = ScreenManager::GetSingleton();
++    if (gfxPlatform::IsHeadless()) {
++      screenManager.SetHelper(MakeUnique<HeadlessScreenHelper>());
++    } else {
++      screenManager.SetHelper(MakeUnique<DesktopScreenHelper>());
++    }
++  }
++
++  return nsBaseAppShell::Init();
++}
++
++void nsAppShell::ScheduleNativeEventCallback() {
++  unsigned char token = 1;
++  [[maybe_unused]] ssize_t r = write(mPipeFDs[1], &token, 1);
++}
++
++bool nsAppShell::ProcessNextNativeEvent(bool aMayWait) {
++  // the desktops messages come in on the tasks ipc queue, polled with POLL_FD_IPC once
++  // theres a window on it
++  struct pollfd pfd[2] = {{mPipeFDs[0], POLLIN, 0}, {POLL_FD_IPC, POLLIN, 0}};
++  nfds_t count = nsWindow::DesktopActive() ? 2 : 1;
++  int ready;
++  do {
++    ready = poll(pfd, count, aMayWait ? -1 : 0);
++  } while (ready < 0 && errno == EINTR);
++
++  if (ready <= 0) {
++    return false;
++  }
++
++  bool did = false;
++  if (count > 1 && (pfd[1].revents & POLLIN)) {
++    nsWindow::ProcessDesktopEvents();
++    did = true;
++  }
++  if (pfd[0].revents & POLLIN) {
++    // the tokens only mean wake up, gecko works out what to run itself
++    unsigned char buf[64];
++    while (read(mPipeFDs[0], buf, sizeof(buf)) > 0) {
++    }
++    NativeEventCallback();
++    did = true;
++  }
++  return did;
++}
+--- /dev/null
++++ b/widget/bleed/nsAppShell.h
+@@ -0,0 +1,28 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef widget_bleed_nsAppShell_h
++#define widget_bleed_nsAppShell_h
++
++#include "nsBaseAppShell.h"
++
++// gecko's native event loop on bleed. a pipe wakes it up for gecko's own events,
++// the crime-scene desktop's ipc queue gets polled alongside it once a window is open
++class nsAppShell : public nsBaseAppShell {
++ public:
++  nsAppShell() = default;
++
++  nsresult Init();
++
++ protected:
++  virtual ~nsAppShell();
++
++  void ScheduleNativeEventCallback() override;
++  bool ProcessNextNativeEvent(bool aMayWait) override;
++
++ private:
++  int mPipeFDs[2] = {-1, -1};
++};
++
++#endif  // widget_bleed_nsAppShell_h
+--- /dev/null
++++ b/widget/bleed/nsBidiKeyboard.cpp
+@@ -0,0 +1,25 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsBidiKeyboard.h"
++#include "nsIWidget.h"
++
++// bleeds keyboard layout is always left to right
++NS_IMPL_ISUPPORTS(nsBidiKeyboard, nsIBidiKeyboard)
++
++NS_IMETHODIMP nsBidiKeyboard::Reset() { return NS_OK; }
++
++NS_IMETHODIMP nsBidiKeyboard::IsLangRTL(bool* aIsRTL) {
++  *aIsRTL = false;
++  return NS_OK;
++}
++
++NS_IMETHODIMP nsBidiKeyboard::GetHaveBidiKeyboards(bool* aResult) {
++  *aResult = false;
++  return NS_OK;
++}
++
++already_AddRefed<nsIBidiKeyboard> nsIWidget::CreateBidiKeyboardInner() {
++  return do_AddRef(new nsBidiKeyboard());
++}
+--- /dev/null
++++ b/widget/bleed/nsBidiKeyboard.h
+@@ -0,0 +1,21 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef widget_bleed_nsBidiKeyboard_h
++#define widget_bleed_nsBidiKeyboard_h
++
++#include "nsIBidiKeyboard.h"
++
++class nsBidiKeyboard : public nsIBidiKeyboard {
++ public:
++  NS_DECL_ISUPPORTS
++  NS_DECL_NSIBIDIKEYBOARD
++
++  nsBidiKeyboard() = default;
++
++ protected:
++  virtual ~nsBidiKeyboard() = default;
++};
++
++#endif  // widget_bleed_nsBidiKeyboard_h
+--- /dev/null
++++ b/widget/bleed/nsLookAndFeel.cpp
+@@ -0,0 +1,211 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsLookAndFeel.h"
++#include "gfxFont.h"
++#include "nsStyleConsts.h"
++
++using namespace mozilla;
++
++static const char16_t UNICODE_BULLET = 0x2022;
++
++nsLookAndFeel::nsLookAndFeel() = default;
++
++nsLookAndFeel::~nsLookAndFeel() = default;
++
++nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
++                                             nscolor& aResult) {
++  aResult = GetStandinForNativeColor(aID, aScheme);
++  return NS_OK;
++}
++
++nsresult nsLookAndFeel::NativeGetInt(IntID aID, int32_t& aResult) {
++  nsresult res = NS_OK;
++  // copied from headless gtk, sane defaults
++  switch (aID) {
++    case IntID::CaretBlinkTime:
++      aResult = 567;
++      break;
++    case IntID::CaretWidth:
++      aResult = 1;
++      break;
++    case IntID::SelectTextfieldsOnKeyFocus:
++      aResult = 1;
++      break;
++    case IntID::SubmenuDelay:
++      aResult = 200;
++      break;
++    case IntID::MenusCanOverlapOSBar:
++      aResult = 0;
++      break;
++    case IntID::UseOverlayScrollbars:
++      aResult = 0;
++      break;
++    case IntID::AllowOverlayScrollbarsOverlap:
++      aResult = 0;
++      break;
++    case IntID::SkipNavigatingDisabledMenuItem:
++      aResult = 1;
++      break;
++    case IntID::DragThresholdX:
++    case IntID::DragThresholdY:
++      aResult = 4;
++      break;
++    case IntID::UseAccessibilityTheme:
++      aResult = 0;
++      break;
++    case IntID::ScrollArrowStyle:
++      aResult = eScrollArrow_None;
++      break;
++    case IntID::ScrollButtonLeftMouseButtonAction:
++      aResult = 0;
++      return NS_OK;
++    case IntID::ScrollButtonMiddleMouseButtonAction:
++      aResult = 3;
++      return NS_OK;
++    case IntID::ScrollButtonRightMouseButtonAction:
++      aResult = 3;
++      return NS_OK;
++    case IntID::TreeOpenDelay:
++      aResult = 1000;
++      break;
++    case IntID::TreeCloseDelay:
++      aResult = 1000;
++      break;
++    case IntID::TreeLazyScrollDelay:
++      aResult = 150;
++      break;
++    case IntID::TreeScrollDelay:
++      aResult = 100;
++      break;
++    case IntID::TreeScrollLinesMax:
++      aResult = 3;
++      break;
++    case IntID::ChosenMenuItemsShouldBlink:
++      aResult = 1;
++      break;
++    case IntID::WindowsAccentColorInTitlebar:
++      aResult = 0;
++      res = NS_ERROR_NOT_IMPLEMENTED;
++      break;
++    case IntID::AlertNotificationOrigin:
++      aResult = NS_ALERT_TOP;
++      break;
++    case IntID::ScrollToClick:
++      aResult = 0;
++      break;
++    case IntID::IMERawInputUnderlineStyle:
++    case IntID::IMESelectedRawTextUnderlineStyle:
++    case IntID::IMEConvertedTextUnderlineStyle:
++    case IntID::IMESelectedConvertedTextUnderline:
++      aResult = static_cast<int32_t>(StyleTextDecorationStyle::Solid);
++      break;
++    case IntID::SpellCheckerUnderlineStyle:
++      aResult = static_cast<int32_t>(StyleTextDecorationStyle::Dotted);
++      break;
++    case IntID::MenuBarDrag:
++      aResult = 0;
++      break;
++    case IntID::ScrollbarButtonAutoRepeatBehavior:
++      aResult = 0;
++      break;
++    case IntID::SwipeAnimationEnabled:
++      aResult = 0;
++      break;
++    case IntID::ScrollbarDisplayOnMouseMove:
++      aResult = 0;
++      break;
++    case IntID::ScrollbarFadeBeginDelay:
++      aResult = 0;
++      break;
++    case IntID::ScrollbarFadeDuration:
++      aResult = 0;
++      break;
++    case IntID::ContextMenuOffsetVertical:
++      aResult = -6;
++      break;
++    case IntID::ContextMenuOffsetHorizontal:
++      aResult = 1;
++      break;
++    case IntID::GTKCSDAvailable:
++      aResult = 0;
++      break;
++    case IntID::GTKCSDMinimizeButton:
++      aResult = 0;
++      break;
++    case IntID::GTKCSDMaximizeButton:
++      aResult = 0;
++      break;
++    case IntID::GTKCSDCloseButton:
++      aResult = 1;
++      break;
++    case IntID::GTKCSDReversedPlacement:
++      aResult = 0;
++      break;
++    case IntID::SystemUsesDarkTheme:
++      aResult = 0;
++      break;
++    case IntID::PrefersReducedMotion:
++    case IntID::PrefersReducedTransparency:
++      aResult = 0;
++      break;
++    case IntID::InvertedColors:
++      aResult = 0;
++      break;
++    case IntID::PrimaryPointerCapabilities:
++      aResult = 0;
++      break;
++    case IntID::AllPointerCapabilities:
++      aResult = 0;
++      break;
++    default:
++      aResult = 0;
++      res = NS_ERROR_FAILURE;
++      break;
++  }
++  return res;
++}
++
++nsresult nsLookAndFeel::NativeGetFloat(FloatID aID, float& aResult) {
++  nsresult res = NS_OK;
++
++  
++  switch (aID) {
++    case FloatID::IMEUnderlineRelativeSize:
++      aResult = 1.0f;
++      break;
++    case FloatID::SpellCheckerUnderlineRelativeSize:
++      aResult = 1.0f;
++      break;
++    case FloatID::CaretAspectRatio:
++      // Intentionally failing to quietly indicate lack of support.
++      aResult = -1.0;
++      res = NS_ERROR_FAILURE;
++      break;
++    default:
++      aResult = -1.0;
++      res = NS_ERROR_FAILURE;
++      break;
++  }
++
++  return res;
++}
++
++bool nsLookAndFeel::NativeGetFont(FontID aID, nsString& aFontName,
++                                        gfxFontStyle& aFontStyle) {
++  // Default to san-serif for everything.
++  aFontStyle.style = FontSlantStyle::NORMAL;
++  aFontStyle.weight = FontWeight::NORMAL;
++  aFontStyle.stretch = FontStretch::NORMAL;
++  aFontStyle.size = 14;
++  aFontStyle.systemFont = true;
++
++  aFontName.AssignLiteral("sans-serif");
++  return true;
++}
++
++char16_t nsLookAndFeel::GetPasswordCharacterImpl() {
++  return UNICODE_BULLET;
++}
++
+--- /dev/null
++++ b/widget/bleed/nsLookAndFeel.h
+@@ -0,0 +1,25 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef widget_bleed_nsLookAndFeel_h
++#define widget_bleed_nsLookAndFeel_h
++
++#include "nsXPLookAndFeel.h"
++
++// fixed values to start with (the ones headless gtk uses), the crime-scene theme
++// colours come in later
++class nsLookAndFeel final : public nsXPLookAndFeel {
++ public:
++  nsLookAndFeel();
++  virtual ~nsLookAndFeel();
++
++  void NativeInit() final {}
++  nsresult NativeGetInt(IntID, int32_t& aResult) override;
++  nsresult NativeGetFloat(FloatID, float& aResult) override;
++  nsresult NativeGetColor(ColorID, ColorScheme, nscolor& aResult) override;
++  bool NativeGetFont(FontID, nsString& aFontName, gfxFontStyle&) override;
++  char16_t GetPasswordCharacterImpl() override;
++};
++
++#endif  // widget_bleed_nsLookAndFeel_h
+--- /dev/null
++++ b/widget/bleed/nsUserIdleServiceBleed.cpp
+@@ -0,0 +1,9 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsUserIdleServiceBleed.h"
++
++// crime-scene doesnt tell us when the user last touched anything yet, so idle time comes from
++// the input firefox itself sees (nsUserIdleService falls back to that when this says no)
++bool nsUserIdleServiceBleed::PollIdleTime(uint32_t* aIdleTime) { return false; }
+--- /dev/null
++++ b/widget/bleed/nsUserIdleServiceBleed.h
+@@ -0,0 +1,37 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef nsUserIdleServiceBleed_h_
++#define nsUserIdleServiceBleed_h_
++
++#include "nsUserIdleService.h"
++#include "mozilla/AppShutdown.h"
++
++class nsUserIdleServiceBleed : public nsUserIdleService {
++ public:
++  NS_INLINE_DECL_REFCOUNTING_INHERITED(nsUserIdleServiceBleed,
++                                       nsUserIdleService)
++
++  bool PollIdleTime(uint32_t* aIdleTime) override;
++
++  static already_AddRefed<nsUserIdleServiceBleed> GetInstance() {
++    RefPtr<nsUserIdleService> idleService = nsUserIdleService::GetInstance();
++    if (!idleService) {
++      // Avoid late instantiation or resurrection during shutdown.
++      if (mozilla::AppShutdown::IsInOrBeyond(
++              mozilla::ShutdownPhase::AppShutdownConfirmed)) {
++        return nullptr;
++      }
++      idleService = new nsUserIdleServiceBleed();
++    }
++
++    return idleService.forget().downcast<nsUserIdleServiceBleed>();
++  }
++
++ protected:
++  nsUserIdleServiceBleed() {}
++  virtual ~nsUserIdleServiceBleed() {}
++};
++
++#endif  // nsUserIdleServiceBleed_h_
+--- /dev/null
++++ b/widget/bleed/nsWidgetFactory.cpp
+@@ -0,0 +1,18 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsWidgetFactory.h"
++
++#include "mozilla/WidgetUtils.h"
++#include "nsAppShell.h"
++#include "nsLookAndFeel.h"
++#include "nsAppShellSingleton.h"
++
++nsresult nsWidgetBleedModuleCtor() { return nsAppShellInit(); }
++
++void nsWidgetBleedModuleDtor() {
++  mozilla::widget::WidgetUtils::Shutdown();
++  nsLookAndFeel::Shutdown();
++  nsAppShellShutdown();
++}
+--- /dev/null
++++ b/widget/bleed/nsWidgetFactory.h
+@@ -0,0 +1,18 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef widget_bleed_nsWidgetFactory_h
++#define widget_bleed_nsWidgetFactory_h
++
++#include "nscore.h"
++#include "nsID.h"
++
++class nsISupports;
++
++nsresult nsAppShellConstructor(const nsIID& iid, void** result);
++
++nsresult nsWidgetBleedModuleCtor();
++void nsWidgetBleedModuleDtor();
++
++#endif  // widget_bleed_nsWidgetFactory_h
+--- /dev/null
++++ b/widget/bleed/nsWindow.cpp
+@@ -0,0 +1,661 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsWindow.h"
++
++#include "BasicEvents.h"
++#include "MouseEvents.h"
++#include "TextEvents.h"
++#include "mozilla/ClearOnShutdown.h"
++#include "mozilla/TextEventDispatcher.h"
++#include "mozilla/dom/KeyboardEventBinding.h"
++#include "mozilla/dom/WheelEventBinding.h"
++#include "mozilla/gfx/2D.h"
++#include "nsIWidgetListener.h"
++#include "nsString.h"
++#include "nsTArray.h"
++
++using namespace mozilla;
++using namespace mozilla::gfx;
++using namespace mozilla::widget;
++
++already_AddRefed<nsIWidget> nsIWidget::CreateTopLevelWindow() {
++  nsCOMPtr<nsIWidget> window = new nsWindow();
++  return window.forget();
++}
++
++// popups only, everything else in a window is drawn by gecko itself
++already_AddRefed<nsIWidget> nsIWidget::CreateChildWindow() {
++  nsCOMPtr<nsIWidget> window = new nsWindow();
++  return window.forget();
++}
++
++namespace mozilla::widget {
++
++StaticRefPtr<DesktopTextListener> DesktopTextListener::sInstance;
++
++NS_IMPL_ISUPPORTS(DesktopTextListener, TextEventDispatcherListener,
++                  nsISupportsWeakReference)
++
++DesktopTextListener* DesktopTextListener::Get() {
++  if (!sInstance) {
++    sInstance = new DesktopTextListener();
++    ClearOnShutdown(&sInstance);
++  }
++  return sInstance;
++}
++
++StaticMutex nsWindow::sDesktopLock;
++
++// the windows that have a desktop window, to hand events to. main thread only
++static StaticAutoPtr<nsTArray<nsWindow*>> sDesktopWindows;
++
++// keymod bits the desktop sends, the same as blibcs keyboard.h
++static constexpr uint8_t kModShift = 1 << 0;
++static constexpr uint8_t kModCtrl = 1 << 1;
++static constexpr uint8_t kModAlt = 1 << 2;
++static constexpr uint8_t kModCaps = 1 << 3;
++
++// two clicks this close together in time and space make a double click
++static constexpr double kDoubleClickMs = 500;
++static constexpr int32_t kDoubleClickPx = 4;
++
++// keys come as ps/2 set 1 scancodes with the e0 prefix dropped, so the keypad and the
++// arrow block share codes and the arrows win. printable ones carry their character, the
++// layout is blibcs (uk shift row)
++struct KeyInfo {
++  uint32_t mKeyCode;
++  KeyNameIndex mKeyName;
++  CodeNameIndex mCode;
++  char mChar;
++  char mShiftChar;
++};
++
++#define PRINT(vk, code, c, s) \
++  {NS_VK_##vk, KEY_NAME_INDEX_USE_STRING, CODE_NAME_INDEX_##code, c, s}
++#define NAMED(vk, key, code) \
++  {NS_VK_##vk, KEY_NAME_INDEX_##key, CODE_NAME_INDEX_##code, 0, 0}
++
++static const KeyInfo kKeys[0x60] = {
++    [0x01] = NAMED(ESCAPE, Escape, Escape),
++    [0x02] = PRINT(1, Digit1, '1', '!'),
++    [0x03] = PRINT(2, Digit2, '2', '"'),
++    [0x04] = PRINT(3, Digit3, '3', '#'),
++    [0x05] = PRINT(4, Digit4, '4', '$'),
++    [0x06] = PRINT(5, Digit5, '5', '%'),
++    [0x07] = PRINT(6, Digit6, '6', '^'),
++    [0x08] = PRINT(7, Digit7, '7', '&'),
++    [0x09] = PRINT(8, Digit8, '8', '*'),
++    [0x0A] = PRINT(9, Digit9, '9', '('),
++    [0x0B] = PRINT(0, Digit0, '0', ')'),
++    [0x0C] = PRINT(HYPHEN_MINUS, Minus, '-', '_'),
++    [0x0D] = PRINT(EQUALS, Equal, '=', '+'),
++    [0x0E] = NAMED(BACK, Backspace, Backspace),
++    [0x0F] = NAMED(TAB, Tab, Tab),
++    [0x10] = PRINT(Q, KeyQ, 'q', 'Q'),
++    [0x11] = PRINT(W, KeyW, 'w', 'W'),
++    [0x12] = PRINT(E, KeyE, 'e', 'E'),
++    [0x13] = PRINT(R, KeyR, 'r', 'R'),
++    [0x14] = PRINT(T, KeyT, 't', 'T'),
++    [0x15] = PRINT(Y, KeyY, 'y', 'Y'),
++    [0x16] = PRINT(U, KeyU, 'u', 'U'),
++    [0x17] = PRINT(I, KeyI, 'i', 'I'),
++    [0x18] = PRINT(O, KeyO, 'o', 'O'),
++    [0x19] = PRINT(P, KeyP, 'p', 'P'),
++    [0x1A] = PRINT(OPEN_BRACKET, BracketLeft, '[', '{'),
++    [0x1B] = PRINT(CLOSE_BRACKET, BracketRight, ']', '}'),
++    [0x1C] = NAMED(RETURN, Enter, Enter),
++    [0x1D] = NAMED(CONTROL, Control, ControlLeft),
++    [0x1E] = PRINT(A, KeyA, 'a', 'A'),
++    [0x1F] = PRINT(S, KeyS, 's', 'S'),
++    [0x20] = PRINT(D, KeyD, 'd', 'D'),
++    [0x21] = PRINT(F, KeyF, 'f', 'F'),
++    [0x22] = PRINT(G, KeyG, 'g', 'G'),
++    [0x23] = PRINT(H, KeyH, 'h', 'H'),
++    [0x24] = PRINT(J, KeyJ, 'j', 'J'),
++    [0x25] = PRINT(K, KeyK, 'k', 'K'),
++    [0x26] = PRINT(L, KeyL, 'l', 'L'),
++    [0x27] = PRINT(SEMICOLON, Semicolon, ';', ':'),
++    [0x28] = PRINT(QUOTE, Quote, '\'', '@'),
++    [0x29] = PRINT(BACK_QUOTE, Backquote, '`', '~'),
++    [0x2A] = NAMED(SHIFT, Shift, ShiftLeft),
++    [0x2B] = PRINT(BACK_SLASH, Backslash, '\\', '|'),
++    [0x2C] = PRINT(Z, KeyZ, 'z', 'Z'),
++    [0x2D] = PRINT(X, KeyX, 'x', 'X'),
++    [0x2E] = PRINT(C, KeyC, 'c', 'C'),
++    [0x2F] = PRINT(V, KeyV, 'v', 'V'),
++    [0x30] = PRINT(B, KeyB, 'b', 'B'),
++    [0x31] = PRINT(N, KeyN, 'n', 'N'),
++    [0x32] = PRINT(M, KeyM, 'm', 'M'),
++    [0x33] = PRINT(COMMA, Comma, ',', '<'),
++    [0x34] = PRINT(PERIOD, Period, '.', '>'),
++    [0x35] = PRINT(SLASH, Slash, '/', '?'),
++    [0x36] = NAMED(SHIFT, Shift, ShiftRight),
++    [0x37] = PRINT(MULTIPLY, NumpadMultiply, '*', '*'),
++    [0x38] = NAMED(ALT, Alt, AltLeft),
++    [0x39] = PRINT(SPACE, Space, ' ', ' '),
++    [0x3A] = NAMED(CAPS_LOCK, CapsLock, CapsLock),
++    [0x3B] = NAMED(F1, F1, F1),
++    [0x3C] = NAMED(F2, F2, F2),
++    [0x3D] = NAMED(F3, F3, F3),
++    [0x3E] = NAMED(F4, F4, F4),
++    [0x3F] = NAMED(F5, F5, F5),
++    [0x40] = NAMED(F6, F6, F6),
++    [0x41] = NAMED(F7, F7, F7),
++    [0x42] = NAMED(F8, F8, F8),
++    [0x43] = NAMED(F9, F9, F9),
++    [0x44] = NAMED(F10, F10, F10),
++    [0x45] = NAMED(NUM_LOCK, NumLock, NumLock),
++    [0x46] = NAMED(SCROLL_LOCK, ScrollLock, ScrollLock),
++    [0x47] = NAMED(HOME, Home, Home),
++    [0x48] = NAMED(UP, ArrowUp, ArrowUp),
++    [0x49] = NAMED(PAGE_UP, PageUp, PageUp),
++    [0x4A] = PRINT(SUBTRACT, NumpadSubtract, '-', '-'),
++    [0x4B] = NAMED(LEFT, ArrowLeft, ArrowLeft),
++    [0x4D] = NAMED(RIGHT, ArrowRight, ArrowRight),
++    [0x4E] = PRINT(ADD, NumpadAdd, '+', '+'),
++    [0x4F] = NAMED(END, End, End),
++    [0x50] = NAMED(DOWN, ArrowDown, ArrowDown),
++    [0x51] = NAMED(PAGE_DOWN, PageDown, PageDown),
++    [0x52] = NAMED(INSERT, Insert, Insert),
++    [0x53] = NAMED(DELETE, Delete, Delete),
++    [0x56] = PRINT(BACK_SLASH, IntlBackslash, '\\', '|'),
++    [0x57] = NAMED(F11, F11, F11),
++    [0x58] = NAMED(F12, F12, F12),
++    [0x5B] = NAMED(WIN, Meta, MetaLeft),
++    [0x5C] = NAMED(WIN, Meta, MetaRight),
++    [0x5D] = NAMED(CONTEXT_MENU, ContextMenu, ContextMenu),
++};
++
++#undef PRINT
++#undef NAMED
++
++// the tty layer has its own codes for the f keys, 132 is f1
++static const KeyInfo* LookupKey(uint16_t aScancode) {
++  if (aScancode >= 132 && aScancode <= 141) {
++    aScancode = 0x3B + (aScancode - 132);
++  } else if (aScancode == 142 || aScancode == 143) {
++    aScancode = 0x57 + (aScancode - 142);
++  }
++  if (aScancode >= std::size(kKeys) || !kKeys[aScancode].mKeyCode) {
++    return nullptr;
++  }
++  return &kKeys[aScancode];
++}
++
++nsWindow::nsWindow() = default;
++
++nsWindow::~nsWindow() { Destroy(); }
++
++bool nsWindow::DesktopActive() {
++  return sDesktopWindows && !sDesktopWindows->IsEmpty();
++}
++
++nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
++                          const widget::InitData& aInitData) {
++  BaseCreate(aParent, aInitData);
++  mBounds = aRect;
++  return NS_OK;
++}
++
++void nsWindow::OpenDesktopWindow() {
++  int32_t width = 0, height = 0;
++  {
++    StaticMutexAutoLock lock(sDesktopLock);
++    if (mDesktop) {
++      return;
++    }
++    NS_ConvertUTF16toUTF8 title(mTitle);
++    mDesktop = cs_window_open_style(mBounds.Width(), mBounds.Height(),
++                                    title.IsEmpty() ? "Firefox" : title.get(),
++                                    mCustomTitlebar ? CS_STYLE_BARE : 0);
++    if (!mDesktop) {
++      // no desktop running, the window carries on like a headless one
++      return;
++    }
++    // firefox maximises its first window on a small screen before its ever shown
++    if (mSizeMode != nsSizeMode_Normal) {
++      cs_window_state(mDesktop, mSizeMode == nsSizeMode_Minimized ? CS_STATE_MINIMISED
++                                                                 : CS_STATE_MAXIMISED);
++    }
++    width = mDesktop->width;
++    height = mDesktop->height;
++  }
++
++  if (!sDesktopWindows) {
++    sDesktopWindows = new nsTArray<nsWindow*>();
++    ClearOnShutdown(&sDesktopWindows);
++  }
++  sDesktopWindows->AppendElement(this);
++
++  // the desktop can give us a different size than we asked for, it caps big windows
++  if (width != mBounds.Width() || height != mBounds.Height()) {
++    ResizeInternal(width, height);
++  }
++}
++
++void nsWindow::CloseDesktopWindow() {
++  {
++    StaticMutexAutoLock lock(sDesktopLock);
++    if (!mDesktop) {
++      return;
++    }
++    cs_window_close(mDesktop);
++    mDesktop = nullptr;
++  }
++  if (sDesktopWindows) {
++    sDesktopWindows->RemoveElement(this);
++  }
++}
++
++void nsWindow::Destroy() {
++  if (mDestroyed) {
++    return;
++  }
++  mDestroyed = true;
++  CloseDesktopWindow();
++  nsIWidget::OnDestroy();
++  nsIWidget::Destroy();
++}
++
++void nsWindow::Show(bool aState) {
++  if (aState == mVisible) {
++    return;
++  }
++  mVisible = aState;
++  if (!IsDesktopWindow()) {
++    return;
++  }
++
++  // the desktop has no hidden windows, so hiding one closes it and showing it opens a new one
++  if (aState) {
++    OpenDesktopWindow();
++    if (mWidgetListener) {
++      mWidgetListener->WindowActivated();
++    }
++  } else {
++    CloseDesktopWindow();
++  }
++}
++
++void nsWindow::Move(const DesktopPoint& aPoint) {
++  // the desktop places windows itself, gecko only gets to know where it thinks they are
++  auto topLeft =
++      LayoutDeviceIntPoint::Round(aPoint * GetDesktopToDeviceScale());
++  if (mBounds.TopLeft() == topLeft) {
++    return;
++  }
++  mBounds.MoveTo(topLeft);
++  NotifyWindowMoved(mBounds.TopLeft());
++}
++
++void nsWindow::Resize(const DesktopSize& aSize, bool aRepaint) {
++  int32_t width = NSToIntRound(aSize.width);
++  int32_t height = NSToIntRound(aSize.height);
++  ConstrainSize(&width, &height);
++  {
++    StaticMutexAutoLock lock(sDesktopLock);
++    if (mDesktop && (width != mDesktop->width || height != mDesktop->height)) {
++      cs_window_resize(mDesktop, width, height);
++    }
++  }
++  ResizeInternal(width, height);
++}
++
++void nsWindow::Resize(const DesktopRect& aRect, bool aRepaint) {
++  Move(aRect.TopLeft());
++  Resize(aRect.Size(), aRepaint);
++}
++
++void nsWindow::ResizeInternal(int32_t aWidth, int32_t aHeight) {
++  if (mBounds.Width() == aWidth && mBounds.Height() == aHeight) {
++    return;
++  }
++  mBounds.SizeTo(LayoutDeviceIntSize(aWidth, aHeight));
++  if (mWidgetListener) {
++    mWidgetListener->WindowResized(this, mBounds.Size());
++  }
++  if (mAttachedWidgetListener) {
++    mAttachedWidgetListener->WindowResized(this, mBounds.Size());
++  }
++}
++
++// the desktop does the minimising and maximising, a CS_EV_STATE says once its happened. its
++// taken as done straight away so the titlebar buttons dont lag behind
++void nsWindow::SetSizeMode(nsSizeMode aMode) {
++  if (aMode == mSizeMode) {
++    return;
++  }
++  {
++    StaticMutexAutoLock lock(sDesktopLock);
++    if (mDesktop) {
++      cs_window_state(mDesktop, aMode == nsSizeMode_Minimized   ? CS_STATE_MINIMISED
++                                : aMode == nsSizeMode_Maximized ? CS_STATE_MAXIMISED
++                                                                : CS_STATE_NORMAL);
++    }
++  }
++  mSizeMode = aMode;
++  if (mWidgetListener) {
++    mWidgetListener->SizeModeChanged(mSizeMode);
++  }
++}
++
++// the taskbar can minimise and restore it, and the desktop maximises a bare window dragged to
++// the top of the screen
++void nsWindow::OnState(int aState) {
++  nsSizeMode mode = aState == CS_STATE_MINIMISED   ? nsSizeMode_Minimized
++                    : aState == CS_STATE_MAXIMISED ? nsSizeMode_Maximized
++                                                   : nsSizeMode_Normal;
++  if (mode == mSizeMode) {
++    return;
++  }
++  mSizeMode = mode;
++  if (mWidgetListener) {
++    mWidgetListener->SizeModeChanged(mSizeMode);
++  }
++}
++
++void nsWindow::SetCustomTitlebar(bool aState) {
++  if (aState == mCustomTitlebar) {
++    return;
++  }
++  mCustomTitlebar = aState;
++  StaticMutexAutoLock lock(sDesktopLock);
++  if (mDesktop) {
++    cs_window_style(mDesktop, aState ? CS_STYLE_BARE : 0);
++  }
++}
++
++void nsWindow::SetFocus(Raise aRaise, mozilla::dom::CallerType aCallerType) {}
++
++nsresult nsWindow::SetTitle(const nsAString& aTitle) {
++  mTitle = aTitle;
++  StaticMutexAutoLock lock(sDesktopLock);
++  if (mDesktop) {
++    cs_window_title(mDesktop, NS_ConvertUTF16toUTF8(aTitle).get());
++  }
++  return NS_OK;
++}
++
++LayoutDeviceIntPoint nsWindow::WidgetToScreenOffset() {
++  return mBounds.TopLeft();
++}
++
++// the lock is held from here until EndRemoteDrawingInRegion so a resize cant pull the
++// buffer out from under the frame
++already_AddRefed<DrawTarget> nsWindow::StartRemoteDrawingInRegion(
++    const LayoutDeviceIntRegion& aInvalidRegion) {
++  sDesktopLock.Lock();
++  if (!mDesktop || !mDesktop->pixels || mDesktop->width <= 0 ||
++      mDesktop->height <= 0) {
++    // hidden or already closed, the compositor still finishes its frames. they go
++    // somewhere nobody sees instead of failing and filling the log
++    IntSize size(std::max(mBounds.width, 1), std::max(mBounds.height, 1));
++    if (!mHiddenTarget || mHiddenTarget->GetSize() != size) {
++      mHiddenTarget = Factory::CreateDrawTarget(BackendType::SKIA, size,
++                                                SurfaceFormat::B8G8R8X8);
++    }
++    RefPtr<DrawTarget> hidden = mHiddenTarget;
++    if (!hidden) {
++      sDesktopLock.Unlock();
++    }
++    return hidden.forget();
++  }
++
++  RefPtr<DrawTarget> dt = Factory::CreateDrawTargetForData(
++      BackendType::SKIA, reinterpret_cast<uint8_t*>(mDesktop->pixels),
++      IntSize(mDesktop->width, mDesktop->height), mDesktop->pitch * 4,
++      SurfaceFormat::B8G8R8X8);
++  if (!dt) {
++    sDesktopLock.Unlock();
++    return nullptr;
++  }
++  return dt.forget();
++}
++
++void nsWindow::EndRemoteDrawingInRegion(
++    DrawTarget* aDrawTarget,
++    const LayoutDeviceIntRegion& aInvalidRegion) {
++  if (mDesktop) {
++    LayoutDeviceIntRect r = aInvalidRegion.GetBounds().Intersect(
++        LayoutDeviceIntRect(0, 0, mDesktop->width, mDesktop->height));
++    if (!r.IsEmpty()) {
++      cs_window_commit(mDesktop, r.x, r.y, r.width, r.height);
++    }
++  }
++  sDesktopLock.Unlock();
++}
++
++void nsWindow::ProcessDesktopEvents() {
++  // taken out under the lock and handled after it, handling them runs gecko code that can
++  // wait on the compositor, which needs the lock to draw
++  AutoTArray<cs_event_t, 16> events;
++  {
++    StaticMutexAutoLock lock(sDesktopLock);
++    cs_event_t ev;
++    while (events.Length() < 256 && cs_event_wait(&ev, 0) > 0) {
++      events.AppendElement(ev);
++    }
++  }
++
++  for (const cs_event_t& ev : events) {
++    if (!sDesktopWindows) {
++      return;
++    }
++    RefPtr<nsWindow> target;
++    {
++      StaticMutexAutoLock lock(sDesktopLock);
++      for (nsWindow* w : *sDesktopWindows) {
++        if (w->mDesktop && w->mDesktop->id == ev.window) {
++          target = w;
++          break;
++        }
++      }
++    }
++    if (target && !target->mDestroyed) {
++      target->HandleEvent(ev);
++    }
++  }
++}
++
++void nsWindow::HandleEvent(const cs_event_t& aEvent) {
++  switch (aEvent.type) {
++    case CS_EV_MOUSE:
++      OnMouse(aEvent);
++      break;
++    case CS_EV_WHEEL:
++      OnWheel(aEvent);
++      break;
++    case CS_EV_KEY:
++      OnKey(aEvent);
++      break;
++    case CS_EV_FOCUS:
++      if (mWidgetListener) {
++        if (aEvent.focused) {
++          mWidgetListener->WindowActivated();
++        } else {
++          mWidgetListener->WindowDeactivated();
++        }
++      }
++      break;
++    case CS_EV_CLOSE_REQUEST:
++      if (mWidgetListener) {
++        mWidgetListener->RequestWindowClose(this);
++      }
++      break;
++    case CS_EV_RESIZE:
++      // libcrime already moved over to the new buffer
++      ResizeInternal(aEvent.w, aEvent.h);
++      break;
++    case CS_EV_STATE:
++      OnState(aEvent.x);
++      break;
++    default:
++      break;
++  }
++}
++
++Modifiers nsWindow::CurrentModifiers() const {
++  Modifiers mods = MODIFIER_NONE;
++  if (mKeymod & kModShift) mods |= MODIFIER_SHIFT;
++  if (mKeymod & kModCtrl) mods |= MODIFIER_CONTROL;
++  if (mKeymod & kModAlt) mods |= MODIFIER_ALT;
++  if (mKeymod & kModCaps) mods |= MODIFIER_CAPSLOCK;
++  return mods;
++}
++
++bool nsWindow::DispatchMouse(EventMessage aMessage, int16_t aButton,
++                             uint32_t aClicks) {
++  WidgetMouseEvent event(true, aMessage, this, WidgetMouseEvent::eReal);
++  event.mRefPoint = mPointer;
++  event.mButton = aButton;
++  // the desktops button bits are the same as the dom ones
++  event.mButtons = static_cast<int16_t>(mButtons);
++  event.mClickCount = aClicks;
++  event.mModifiers = CurrentModifiers();
++  event.AssignEventTime(WidgetEventTime());
++  return DispatchInputEvent(&event).mContentStatus ==
++         nsEventStatus_eConsumeNoDefault;
++}
++
++void nsWindow::OnMouse(const cs_event_t& aEvent) {
++  LayoutDeviceIntPoint at(aEvent.x, aEvent.y);
++  if (at != mPointer) {
++    mPointer = at;
++    DispatchMouse(eMouseMove, MouseButton::ePrimary, 0);
++
++    // dragged off the title bar far enough to be a move, the desktop takes it from here and
++    // sends the button up when its let go
++    if (mShouldStartDragging && (aEvent.buttons & CS_BUTTON_LEFT) &&
++        (std::abs(at.x - mDragFrom.x) > kDoubleClickPx ||
++         std::abs(at.y - mDragFrom.y) > kDoubleClickPx)) {
++      mShouldStartDragging = false;
++      StaticMutexAutoLock lock(sDesktopLock);
++      if (mDesktop) {
++        cs_window_move_drag(mDesktop);
++      }
++    }
++  }
++
++  static const struct {
++    uint32_t mBit;
++    int16_t mButton;
++  } kButtons[] = {{CS_BUTTON_LEFT, MouseButton::ePrimary},
++                  {CS_BUTTON_RIGHT, MouseButton::eSecondary},
++                  {CS_BUTTON_MIDDLE, MouseButton::eMiddle}};
++
++  for (const auto& b : kButtons) {
++    bool down = aEvent.buttons & b.mBit;
++    if (down == bool(mButtons & b.mBit)) {
++      continue;
++    }
++
++    if (down) {
++      mButtons |= b.mBit;
++      TimeStamp now = TimeStamp::Now();
++      bool again = mLastClickButton == b.mButton && !mLastClick.IsNull() &&
++                   (now - mLastClick).ToMilliseconds() < kDoubleClickMs &&
++                   std::abs(at.x - mLastClickAt.x) <= kDoubleClickPx &&
++                   std::abs(at.y - mLastClickAt.y) <= kDoubleClickPx;
++      mClickCount = again ? mClickCount + 1 : 1;
++      mLastClick = now;
++      mLastClickAt = at;
++      mLastClickButton = b.mButton;
++      bool taken = DispatchMouse(eMouseDown, b.mButton, mClickCount);
++
++      // the title bar: twice maximises or puts it back, once might be the start of a move
++      if (!taken && !mDestroyed && mCustomTitlebar &&
++          b.mButton == MouseButton::ePrimary && mDraggableRegion.Contains(at)) {
++        if (mClickCount == 2) {
++          SetSizeMode(mSizeMode == nsSizeMode_Maximized ? nsSizeMode_Normal
++                                                        : nsSizeMode_Maximized);
++        } else {
++          mShouldStartDragging = true;
++          mDragFrom = at;
++        }
++      }
++      // the context menu comes on the press like gtk
++      if (b.mButton == MouseButton::eSecondary && !mDestroyed) {
++        DispatchMouse(eContextMenu, b.mButton, mClickCount);
++      }
++    } else {
++      mButtons &= ~b.mBit;
++      if (b.mButton == MouseButton::ePrimary) {
++        mShouldStartDragging = false;
++      }
++      DispatchMouse(eMouseUp, b.mButton, mClickCount);
++    }
++    if (mDestroyed) {
++      return;
++    }
++  }
++}
++
++void nsWindow::OnWheel(const cs_event_t& aEvent) {
++  // a notch away from you is positive and scrolls up, three lines a notch like gtk
++  WidgetWheelEvent event(true, eWheel, this);
++  event.mRefPoint = LayoutDeviceIntPoint(aEvent.x, aEvent.y);
++  event.mDeltaMode = dom::WheelEvent_Binding::DOM_DELTA_LINE;
++  event.mDeltaY = -3.0 * aEvent.wheel;
++  event.mLineOrPageDeltaY = -3 * aEvent.wheel;
++  event.mModifiers = CurrentModifiers();
++  event.AssignEventTime(WidgetEventTime());
++  DispatchInputEvent(&event);
++}
++
++void nsWindow::OnKey(const cs_event_t& aEvent) {
++  mKeymod = aEvent.keymod;
++  const KeyInfo* key = LookupKey(aEvent.keycode);
++  if (!key) {
++    return;
++  }
++
++  bool down = aEvent.key_action != 0;
++  uint8_t slot = aEvent.keycode & 0xFF;
++  WidgetKeyboardEvent event(true, down ? eKeyDown : eKeyUp, this);
++  event.mKeyCode = key->mKeyCode;
++  event.mCodeNameIndex = key->mCode;
++  event.mModifiers = CurrentModifiers();
++  event.mIsRepeat = down && mKeysDown[slot];
++  mKeysDown[slot] = down;
++
++  if (key->mChar) {
++    char c = key->mChar;
++    if (mKeymod & kModShift) {
++      c = key->mShiftChar;
++    } else if ((mKeymod & kModCaps) && c >= 'a' && c <= 'z') {
++      c = c - 'a' + 'A';
++    }
++    event.mKeyNameIndex = KEY_NAME_INDEX_USE_STRING;
++    event.mKeyValue.Assign(char16_t(c));
++  } else {
++    event.mKeyNameIndex = key->mKeyName;
++  }
++  if (key->mCode == CODE_NAME_INDEX_ShiftRight ||
++      key->mCode == CODE_NAME_INDEX_MetaRight) {
++    event.mLocation = dom::KeyboardEvent_Binding::DOM_KEY_LOCATION_RIGHT;
++  } else if (key->mCode == CODE_NAME_INDEX_ShiftLeft ||
++             key->mCode == CODE_NAME_INDEX_ControlLeft ||
++             key->mCode == CODE_NAME_INDEX_AltLeft ||
++             key->mCode == CODE_NAME_INDEX_MetaLeft) {
++    event.mLocation = dom::KeyboardEvent_Binding::DOM_KEY_LOCATION_LEFT;
++  } else if (key->mCode == CODE_NAME_INDEX_NumpadMultiply ||
++             key->mCode == CODE_NAME_INDEX_NumpadSubtract ||
++             key->mCode == CODE_NAME_INDEX_NumpadAdd) {
++    event.mLocation = dom::KeyboardEvent_Binding::DOM_KEY_LOCATION_NUMPAD;
++  }
++  event.AssignEventTime(WidgetEventTime());
++
++  RefPtr<TextEventDispatcher> dispatcher = GetTextEventDispatcher();
++  if (NS_FAILED(dispatcher->BeginNativeInputTransaction())) {
++    return;
++  }
++  nsEventStatus status = nsEventStatus_eIgnore;
++  dispatcher->DispatchKeyboardEvent(event.mMessage, event, status);
++  if (down && !mDestroyed && status != nsEventStatus_eConsumeNoDefault) {
++    dispatcher->MaybeDispatchKeypressEvents(event, status);
++  }
++}
++
++}  // namespace mozilla::widget
+--- /dev/null
++++ b/widget/bleed/nsWindow.h
+@@ -0,0 +1,156 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef widget_bleed_nsWindow_h
++#define widget_bleed_nsWindow_h
++
++#include "nsIWidget.h"
++#include "mozilla/StaticMutex.h"
++#include "mozilla/StaticPtr.h"
++#include "mozilla/ThreadSafety.h"
++#include "mozilla/TimeStamp.h"
++#include "mozilla/TextEventDispatcherListener.h"
++
++extern "C" {
++#include <crime/crime.h>
++}
++
++namespace mozilla::widget {
++
++// keys go through TextEventDispatcher so keypress events come out right, it wants a listener.
++// theres no ime on bleed so one does for every window
++class DesktopTextListener final : public TextEventDispatcherListener {
++ public:
++  static DesktopTextListener* Get();
++
++  NS_DECL_ISUPPORTS
++
++  NS_IMETHOD NotifyIME(TextEventDispatcher* aTextEventDispatcher,
++                       const IMENotification& aNotification) override {
++    return NS_OK;
++  }
++  NS_IMETHOD_(IMENotificationRequests) GetIMENotificationRequests() override {
++    return IMENotificationRequests();
++  }
++  NS_IMETHOD_(void)
++  OnRemovedFrom(TextEventDispatcher* aTextEventDispatcher) override {}
++  NS_IMETHOD_(void)
++  WillDispatchKeyboardEvent(TextEventDispatcher* aTextEventDispatcher,
++                            WidgetKeyboardEvent& aKeyboardEvent,
++                            uint32_t aIndexOfKeypress, void* aData) override {}
++
++ private:
++  ~DesktopTextListener() = default;
++  static StaticRefPtr<DesktopTextListener> sInstance;
++};
++
++// a window on the crime-scene desktop. top level windows and dialogs get a desktop window
++// of their own with a shared pixel buffer the compositor draws straight into. popups dont
++// have a desktop window yet, they stay invisible like headless ones
++class nsWindow final : public nsIWidget {
++ public:
++  nsWindow();
++
++  NS_INLINE_DECL_REFCOUNTING_INHERITED(nsWindow, nsIWidget)
++
++  // the desktop is talked to from the main thread, events come in through the app shell
++  static bool DesktopActive();
++  static void ProcessDesktopEvents();
++
++  void* GetNativeData(uint32_t aDataType) override { return nullptr; }
++
++  nsresult Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
++                  const widget::InitData&) override;
++  using nsIWidget::Create;
++
++  void Destroy() override;
++  void Show(bool aState) override;
++  bool IsVisible() const override { return mVisible; }
++  void Move(const DesktopPoint&) override;
++  void Resize(const DesktopSize&, bool aRepaint) override;
++  void Resize(const DesktopRect&, bool aRepaint) override;
++  nsSizeMode SizeMode() override { return mSizeMode; }
++  void SetSizeMode(nsSizeMode aMode) override;
++  void Enable(bool aState) override { mEnabled = aState; }
++  bool IsEnabled() const override { return mEnabled; }
++  void SetFocus(Raise, mozilla::dom::CallerType aCallerType) override;
++  // firefox draws its own title bar, the desktop leaves the window bare
++  void SetCustomTitlebar(bool aState) override;
++  void UpdateWindowDraggingRegion(const LayoutDeviceIntRegion& aRegion) override {
++    mDraggableRegion = aRegion;
++  }
++  LayoutDeviceIntRect GetBounds() override { return mBounds; }
++  void Invalidate(const LayoutDeviceIntRect& aRect) override {}
++  nsresult SetTitle(const nsAString& aTitle) override;
++  LayoutDeviceIntPoint WidgetToScreenOffset() override;
++  void SetInputContext(const InputContext& aContext,
++                       const InputContextAction& aAction) override {
++    mInputContext = aContext;
++  }
++  InputContext GetInputContext() override { return mInputContext; }
++  TextEventDispatcherListener* GetNativeTextEventDispatcherListener() override {
++    return DesktopTextListener::Get();
++  }
++
++  // called on the compositors render thread
++  already_AddRefed<gfx::DrawTarget> StartRemoteDrawingInRegion(
++      const LayoutDeviceIntRegion& aInvalidRegion) override
++      MOZ_NO_THREAD_SAFETY_ANALYSIS;
++  void EndRemoteDrawingInRegion(gfx::DrawTarget* aDrawTarget,
++                                const LayoutDeviceIntRegion& aInvalidRegion)
++      override MOZ_NO_THREAD_SAFETY_ANALYSIS;
++
++ private:
++  ~nsWindow();
++
++  bool IsDesktopWindow() const {
++    return mWindowType == WindowType::TopLevel ||
++           mWindowType == WindowType::Dialog;
++  }
++  void OpenDesktopWindow();
++  void CloseDesktopWindow();
++  void ResizeInternal(int32_t aWidth, int32_t aHeight);
++  void HandleEvent(const cs_event_t& aEvent);
++  void OnMouse(const cs_event_t& aEvent);
++  void OnWheel(const cs_event_t& aEvent);
++  void OnKey(const cs_event_t& aEvent);
++  // true if content took it (preventDefault)
++  bool DispatchMouse(EventMessage aMessage, int16_t aButton, uint32_t aClicks);
++  void OnState(int aState);
++  Modifiers CurrentModifiers() const;
++
++  cs_window_t* mDesktop = nullptr;  // only touched under sDesktopLock
++  // what frames draw into while theres no desktop window, also under sDesktopLock
++  RefPtr<gfx::DrawTarget> mHiddenTarget;
++  bool mEnabled = true;
++  bool mVisible = false;
++  bool mDestroyed = false;
++  nsSizeMode mSizeMode = nsSizeMode_Normal;
++  bool mCustomTitlebar = false;
++  // the tab strip and the rest of the title bar, a press there moves the window
++  LayoutDeviceIntRegion mDraggableRegion;
++  bool mShouldStartDragging = false;
++  LayoutDeviceIntPoint mDragFrom;
++  InputContext mInputContext;
++  LayoutDeviceIntRect mBounds;
++  nsString mTitle;
++
++  // what the pointer and keyboard were last time, the desktop sends whole states
++  LayoutDeviceIntPoint mPointer;
++  uint32_t mButtons = 0;
++  uint8_t mKeymod = 0;
++  bool mKeysDown[256] = {};
++  TimeStamp mLastClick;
++  LayoutDeviceIntPoint mLastClickAt;
++  int16_t mLastClickButton = -1;
++  uint32_t mClickCount = 0;
++
++  // libcrime isnt thread safe and a resize swaps the buffer the render thread draws in, so
++  // every libcrime call and every frame happens under this
++  static StaticMutex sDesktopLock;
++};
++
++}  // namespace mozilla::widget
++
++#endif  // widget_bleed_nsWindow_h
+--- a/widget/moz.build
++++ b/widget/moz.build
+@@ -53,7 +53,7 @@
+     "components.conf",
+ ]
+ 
+-if toolkit in ("android", "cocoa", "gtk", "uikit", "windows"):
++if toolkit in ("android", "bleed", "cocoa", "gtk", "uikit", "windows"):
+     DIRS += [toolkit]
+ 
+ if toolkit == "cocoa":
+@@ -336,7 +336,7 @@
+ if CONFIG["MOZ_X11"] or CONFIG["MOZ_WAYLAND"]:
+     DIRS += ["x11"]
+ 
+-if toolkit in {"gtk", "cocoa", "windows", "android", "uikit"}:
++if toolkit in {"gtk", "cocoa", "windows", "android", "uikit", "bleed"}:
+     UNIFIED_SOURCES += [
+         "nsBaseFilePicker.cpp",
+     ]
+@@ -346,7 +346,7 @@
+         "nsBaseColorPicker.cpp",
+     ]
+ 
+-if toolkit in ("gtk", "windows", "cocoa", "uikit", "android"):
++if toolkit in ("gtk", "windows", "cocoa", "uikit", "android", "bleed"):
+     UNIFIED_SOURCES += [
+         "nsNativeTheme.cpp",
+     ]
+--- a/xpcom/io/SpecialSystemDirectory.cpp
++++ b/xpcom/io/SpecialSystemDirectory.cpp
+@@ -391,7 +391,14 @@
+         return rv;
+       }
+     }
++#ifdef MOZ_WIDGET_BLEED
++    // bleed has no user-dirs.dirs, every one of them falls back like the desktop does
++  } else if (Unix_XDG_Desktop == aSystemDirectory ||
++             Unix_XDG_Documents == aSystemDirectory ||
++             Unix_XDG_Download == aSystemDirectory) {
++#else
+   } else if (Unix_XDG_Desktop == aSystemDirectory) {
++#endif
+     // for the XDG desktop dir, fall back to HOME/Desktop
+     // (for historical compatibility)
+     nsCOMPtr<nsIFile> home;
+@@ -405,7 +412,13 @@
+       return rv;
+     }
+ 
++#ifdef MOZ_WIDGET_BLEED
++    rv = file->AppendNative(Unix_XDG_Documents == aSystemDirectory ? "Documents"_ns
++                            : Unix_XDG_Download == aSystemDirectory ? "Downloads"_ns
++                                                                    : "Desktop"_ns);
++#else
+     rv = file->AppendNative("Desktop"_ns);
++#endif
+     if (NS_FAILED(rv)) {
+       return rv;
+     }

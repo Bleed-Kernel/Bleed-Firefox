@@ -1,0 +1,1 @@
+name=Firefox ESR

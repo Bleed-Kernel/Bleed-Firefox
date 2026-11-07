@@ -1,0 +1,21 @@
+#!/bin/sh
+here=$(cd "$(dirname "$0")" && pwd)
+sysroot=${BLEED_SYSROOT_DIR:-$here/../sysroot}
+llvm=${BLEED_LLVM_BIN:-/opt/homebrew/opt/llvm@22/bin}
+
+case "$(basename "$0")" in
+    *clang++) cc=$llvm/clang++; lang="-stdlib=libc++ -nostdinc++ -isystem $sysroot/usr/include/c++/v1" ;;
+    *)        cc=$llvm/clang;   lang="" ;;
+esac
+
+link=1
+for a; do
+    case "$a" in -c|-S|-E|-M|-MM|-fsyntax-only) link=0 ;; esac
+done
+
+set -- --target=x86_64-unknown-linux-musl --sysroot="$sysroot" -D__bleed__=1 $lang "$@"
+if [ $link = 1 ]; then
+    set -- -fuse-ld=lld --ld-path=${BLEED_LLD:-/opt/homebrew/bin/ld.lld} -rtlib=libgcc -unwindlib=none \
+        -Wl,--dynamic-linker=/lib/libc.so -Wl,--eh-frame-hdr "$@" ${BLEED_EXTRA_LDFLAGS}
+fi
+exec "$cc" "$@"

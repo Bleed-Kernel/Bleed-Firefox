@@ -1,0 +1,5 @@
+/external/
+/bin/
+/build/
+/toolchain/sysroot/
+**/.DS_Store
